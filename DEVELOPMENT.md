@@ -980,7 +980,8 @@ mode leaks into the enemy dispatcher, and `$E5FF + 0` becomes `$4665`.
 
 The framework fix preserves the original paired continuation and its valid
 stack cleanup, after checking known non-local ancestors. The updated pin is
-`28823fcce1c12140930980b66c0d429e33053298`, from
+`2562bcf48036f4819b503908a8066a2fb8266b6c`, the merged version of runtime
+fix `28823fcce1c12140930980b66c0d429e33053298` from
 [snesrecomp PR174](https://github.com/RetroPortingToolKit/snesrecomp/pull/174).
 No game-side HLE override or dispatch exclusion is required; experimental
 tail-helper changes and private probes were removed.
@@ -996,7 +997,8 @@ stack wrap, non-local ancestor priority and rewritten return PCs.
 [Detailed validation and limits](https://github.com/RetroPortingToolKit/snesrecomp/blob/fix/paired-callee-stack-cleanup/docs/validation/sm-callee-cleanup-2026-10-14.md).
 Automated runs use cold save directories, `wait 20000` / `wait 60000` input
 scripts, `DisableFrameDelay=1`, SDL software presentation and dummy audio/video
-drivers; audio emulation remains enabled. Owner final play approval is pending.
+drivers; audio emulation remains enabled. The owner approved final play
+validation and authorized integration and the v0.3.10 release on 2026-10-14.
 Tracking: **beads-8wg.6.11**, **beads-8wg.2.126**.
 
 ## Owner-gated (do NOT do without explicit decision)
