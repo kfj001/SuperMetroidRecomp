@@ -963,6 +963,42 @@ playtest and authorized committing it on 2026-09-28. Merge/release and permanent
 regeneration wiring remain pending. Full evidence is in the engine worktree's
 `docs/validation/disassembly-2026-09-28.md` and ignored `build/authority-study/`.
 
+## 2026-10-14: long attract demo return-frame cleanup
+
+The owner observed a frozen attract demo during shared-framework PR171–173
+validation. The same 20,000-frame cold-boot route freezes on both baseline and
+candidate at frame 12,910, with an invalid `$A7:0000` enemy callback. The host
+keeps presenting frames after the guest enters its crash loop; frame-count
+completion alone therefore does not qualify this route.
+
+The cause is the shared compiler's handling of a callee-cleaned stack frame.
+`$A0:BB70` moves its JSL return frame above four argument bytes and returns to
+the correct `$A3:E8C1` continuation with S=`$1FEE`. Because S differs from its
+entry value, generated RTL dispatches that internal continuation; the miss
+path resets S to `$1FEA`. The caller then returns through stale bytes, decimal
+mode leaks into the enemy dispatcher, and `$E5FF + 0` becomes `$4665`.
+
+The framework fix preserves the original paired continuation and its valid
+stack cleanup, after checking known non-local ancestors. The updated pin is
+`28823fcce1c12140930980b66c0d429e33053298`, from
+[snesrecomp PR174](https://github.com/RetroPortingToolKit/snesrecomp/pull/174).
+No game-side HLE override or dispatch exclusion is required; experimental
+tail-helper changes and private probes were removed.
+
+Validation with unchanged title sources: 20,000- and 60,000-frame attract runs
+complete with zero interpreter caps, scheduler bailouts or APU timeouts, and
+guest NMI counters continue advancing at the end. Nine paired routes across
+SMW, ALttP, Super Metroid and Mega Man X match every available evidence file
+exactly (76,244 actual frames per arm). Ceres retains its existing APU timeout
+in both arms. Compiler execution regressions cover RTS/RTL argument cleanup,
+stack wrap, non-local ancestor priority and rewritten return PCs.
+
+[Detailed validation and limits](https://github.com/RetroPortingToolKit/snesrecomp/blob/fix/paired-callee-stack-cleanup/docs/validation/sm-callee-cleanup-2026-10-14.md).
+Automated runs use cold save directories, `wait 20000` / `wait 60000` input
+scripts, `DisableFrameDelay=1`, SDL software presentation and dummy audio/video
+drivers; audio emulation remains enabled. Owner final play approval is pending.
+Tracking: **beads-8wg.6.11**, **beads-8wg.2.126**.
+
 ## Owner-gated (do NOT do without explicit decision)
 Merging `investigate/sm-0012-blocker` or the multi-tier branches to main;
 releasing any game; reconciling the multi-tier branches; editing `src/gen/`.
