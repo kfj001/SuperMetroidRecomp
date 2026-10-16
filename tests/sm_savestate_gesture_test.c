@@ -15,6 +15,8 @@
  * overlay modules alone rather than the whole runtime -- the behaviour under
  * test is the input guard, which touches none of them. */
 #include "common_rtl.h"
+#include "netplay/snes_netplay.h"
+#include "snes_osd.h"
 void RtlSaveLoad(int t, int slot) { (void)t; (void)slot; }
 /* The menu now saves/loads through snapshot paths directly (framework
  * 2026-09); the gesture under test never reaches them. */
@@ -27,6 +29,19 @@ void RtlSaveSlotPath(int slot, char *buf, size_t buflen) {
 void snes_osd_push_slot_saved(int s) { (void)s; }
 void snes_osd_push_slot_loaded(int s) { (void)s; }
 void snes_osd_push_slot_empty(int s) { (void)s; }
+/* Exercise the offline gesture without linking a session or toast renderer. */
+int snes_netplay_active(void) { return 0; }
+int snes_netplay_is_host(void) { return 0; }
+int snes_netplay_menu_open(void) { return 0; }
+int snes_netplay_menu_paused(void) { return 0; }
+int snes_netplay_menu_ready(void) { return 0; }
+void snes_netplay_menu_cursor(int slot) { (void)slot; }
+int snes_netplay_menu_save(int slot) { (void)slot; return 0; }
+int snes_netplay_menu_load(int slot) { (void)slot; return 0; }
+int snes_netplay_menu_close(void) { return 0; }
+void snes_osd_push(const char *message, int duration_ms) {
+    (void)message; (void)duration_ms;
+}
 
 static int fails, checks;
 static void check(int c, const char *w) {
