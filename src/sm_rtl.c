@@ -30,6 +30,7 @@ static void sm_no_recompiled_code(const char *what) {
 #include "funcs.h"
 #endif
 #include "snes/interp_bridge.h"
+#include "snes/saveload.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -109,6 +110,78 @@ static int sm_rtl_diag_enabled(void) {
     s_init = 1;
   }
   return s_enabled;
+}
+
+/* File snapshots need the active CPU and the LLE scheduler's continuation.
+ * snes_saveload() saves the dormant hardware CPU, while this port executes
+ * through g_cpu. A same-process load can hide the omission; a fresh launch
+ * otherwise resumes reset over restored WRAM. Use the framework's versioned,
+ * pointer-free execution residue, never a serialized host fiber or C stack.
+ * HLE fiber snapshots retain their historical limitations: there is no
+ * portable on-disk representation of a suspended native call chain. */
+#define SM_FILE_STATE_MAGIC 0x534D4653u  /* SMFS */
+static uint32_t g_loaded_file_state[7];
+static bool g_loaded_file_state_valid;
+
+void SmStateSaveExtra(struct SaveLoadInfo *sli) {
+  if (g_game_fiber || sm_execution_mode() != SNESRECOMP_EXECUTION_MODE_LLE)
+    return;
+  uint32_t header[7] = {
+    SM_FILE_STATE_MAGIC, 1, g_lle_resume_pc,
+    g_game_started ? 1u : 0u, g_game_done ? 1u : 0u,
+    counter_global_frames, (uint32_t)SmSpcPlayer_StateSize()
+  };
+  sli->func(sli, header, sizeof(header));
+  RtlSaveExecutionState(sli);
+  if (header[6]) {
+    void *spc = malloc(header[6]);
+    if (!spc) abort();
+    if (SmSpcPlayer_SaveState(spc, header[6]) != header[6]) abort();
+    sli->func(sli, spc, header[6]);
+    free(spc);
+  }
+}
+
+void SmStateLoadExtra(struct SaveLoadInfo *sli, uint32_t version) {
+  (void)version;
+  g_loaded_file_state_valid = false;
+  sli->func(sli, g_loaded_file_state, sizeof(g_loaded_file_state));
+  const uint32_t *h = g_loaded_file_state;
+  if (h[0] != SM_FILE_STATE_MAGIC || h[1] != 1 || h[2] > 0xFFFFFFu ||
+      h[3] > 1 || h[4] > 1 || (h[6] && h[6] != SmSpcPlayer_StateSize())) {
+    fprintf(stderr, "[sm_state] unrecognized execution-state extension\n");
+    return;
+  }
+  if (!RtlLoadExecutionState(sli)) {
+    fprintf(stderr, "[sm_state] execution residue does not match this runtime\n");
+    return;
+  }
+  if (h[6]) {
+    void *spc = malloc(h[6]);
+    if (!spc) abort();
+    sli->func(sli, spc, h[6]);
+    int ok = SmSpcPlayer_LoadState(spc, h[6]);
+    free(spc);
+    if (!ok) return;
+  }
+  g_loaded_file_state_valid = true;
+}
+
+void SmOnStateLoaded(uint32_t version) {
+  SmRendererReset();
+  if (!g_loaded_file_state_valid || g_game_fiber ||
+      sm_execution_mode() != SNESRECOMP_EXECUTION_MODE_LLE) {
+    fprintf(stderr, "[sm_state] loaded legacy/incompatible v%u snapshot; "
+            "native continuation not restored\n", (unsigned)version);
+    g_loaded_file_state_valid = false;
+    return;
+  }
+  RtlApplyExecutionState();
+  g_lle_resume_pc = g_loaded_file_state[2];
+  g_game_started = g_loaded_file_state[3] != 0;
+  g_game_done = g_loaded_file_state[4] != 0;
+  counter_global_frames = (uint16_t)g_loaded_file_state[5];
+  g_loaded_file_state_valid = false;
 }
 
 static void CALLBACK sm_game_fiber_entry(void *param) {
