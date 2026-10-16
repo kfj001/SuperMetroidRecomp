@@ -74,7 +74,7 @@ Download the setup ZIP for Windows x64, Linux x64, macOS arm64 or macOS x64
 from this repository's Releases page. Extract the whole archive and run its
 setup program. Select your own unmodified Super Metroid (Japan, USA) ROM;
 the launcher generates and builds the playable game locally. Build tools are
-included in the v0.3.10 setup packs. No ROM or saved progress is included.
+included in the setup packs. No ROM or saved progress is included.
 
 Open **Mods** in the launcher to enable **Widescreen** (Fit, 16:9, 21:9 or 32:9)
 and choose edge-anchored or centered HUD placement. **Presentation FPS** is a
