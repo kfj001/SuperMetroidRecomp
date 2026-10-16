@@ -114,6 +114,64 @@ cmake --build build -j 8
 ./build/SuperMetroidSNESRecomp.exe "Super Metroid (Japan, USA) (En,Ja).sfc"
 ```
 
+## Scripted progression QA
+
+`tools/sm_progression_qa.py` drives a trace-enabled desktop build through the
+local debug protocol. It uses private settings and saves, keeps audio emulation
+enabled with muted output, journals controller inputs and memory writes, and
+captures screenshots, WRAM and state at each waypoint. The supplied ROM is
+verified and never modified. Python 3.10 or newer is required.
+
+Configure the build with `-DSNESRECOMP_ENABLE_TRACE=ON`, regenerate the C from
+the current `recomp/` directives, then run, for example:
+
+```sh
+python tools/sm_progression_qa.py --exe build/SuperMetroidSNESRecomp.exe \
+  --rom "Super Metroid (Japan, USA) (En,Ja).sfc" \
+  --output _qa/equipment --landing-probe --equipment-route \
+  --invincible --assist-pickups --save-each-room --station-probe
+```
+
+Room jumps use the ROM's door loader, including room-state selection, graphics,
+enemies, PLMs and room ASM. Samus walks briefly after each entry. Item tests
+try movement and shooting, then optionally inject a contact/shot marker into
+the active item PLM; the ROM applies inventory changes and messages. The tool
+waits through the message's reading delay before attempting another door.
+The route was informed by the [MarcusRaven86 walkthrough](https://gamefaqs.gamespot.com/snes/588741-super-metroid/faqs/75189/down-to-brinstar)
+and checked against [sm-json-data](https://github.com/vg-json-data/sm-json-data).
+Room and item objects are discovered from the supplied ROM and live RAM;
+neither dataset is required to run the tool.
+
+Use `--sweep` for every accessible Zebes room, `--rooms 957d df1b` for specific
+hexadecimal room headers, and `--post-boss` to inspect alternate room states.
+Use `--boss-assist --boss-phase` with boss-room targets to accelerate damage
+and allow explicit death-phase injection for Kraid, Phantoon and Ridley. Boss
+completion requires the ROM to set a boss flag. Directly injected boss flags
+in `--post-boss` are diagnostic state setup, not evidence of a boss victory.
+
+Each output directory must be new. `report.json` records executable/ROM hashes,
+options, transitions, pickup outcomes, boss assistance and failures. Unverified
+pickups and uncleared bosses remain visible in the report. `--save-each-room`
+retains host checkpoints for `--seed-state`; `--seed-sram` copies guest SRAM
+before launch and starts it through the normal menus. `--save-probe` poisons
+health after saving, reloads it, then checks that input advances the game.
+Raw `.l3sn` hardware dumps are diagnostic artifacts; use `.sav` checkpoints
+to restore the port's execution continuation.
+
+The October 2026 pass entered 255 accessible Zebes rooms plus all six Ceres
+rooms, exercised equipment pickups and real save-station SRAM, and compared
+the Crab Maze failure against interpreter-only execution. Default LLE fixes
+cover item-message yielding, an inline-argument HDMA wrapper, the compiled
+enemy slope helper, and host snapshots loaded in a fresh process. The fixes
+use existing portable interpreter/runtime interfaces. File continuations
+require matching runtime builds; legacy snapshots and suspended HLE native
+fibers retain their prior limitations.
+
+Injected doors bypass traversal requirements, and test-only control-lock
+normalization follows forced elevator entries. Room visits therefore establish
+loader/frame coverage, not an unassisted playthrough or full-room collision
+coverage. Mother Brain, the final escape and credits remain unvalidated.
+
 ## Layout
 
 | Path | What |

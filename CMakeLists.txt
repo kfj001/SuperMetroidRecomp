@@ -109,7 +109,7 @@ if(BUILD_TESTING AND NOT ANDROID)
         ${SNESRECOMP_ROOT}/runner/src/desktop/host_clock.c)
     target_include_directories(sm_video_test PRIVATE src ${RECOMP_UI_ROOT}/src
         ${SNESRECOMP_RUNNER_INCLUDE_DIRS}
-        ${SNESRECOMP_RUNNER_ROOT}/src/desktop)
+        ${SNESRECOMP_ROOT}/runner/src/desktop)
     add_test(NAME sm_custom_video
         COMMAND sm_video_test ${CMAKE_CURRENT_BINARY_DIR}/sm-video-test.ini)
 
@@ -125,7 +125,7 @@ if(BUILD_TESTING AND NOT ANDROID)
         ${SNESRECOMP_ROOT}/runner/src/desktop/host_clock.c)
     target_include_directories(sm_render_capture PRIVATE src
         ${SNESRECOMP_RUNNER_INCLUDE_DIRS}
-        ${SNESRECOMP_RUNNER_ROOT}/src/desktop)
+        ${SNESRECOMP_ROOT}/runner/src/desktop)
     # Assertions are the test oracle, including Release configurations.
     foreach(sm_test sm_video_test sm_renderer_test)
         if(MSVC)
