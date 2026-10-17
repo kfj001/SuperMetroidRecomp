@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(SuperMetroidSNESRecomp C)
+project(SuperMetroidSNESRecomp VERSION 0.3.12 LANGUAGES C)
 
 # Cross-platform (macOS/Linux/MinGW) build for SuperMetroidSNESRecomp.
 #
@@ -36,6 +36,12 @@ endif()
 
 include(${SNESRECOMP_ROOT}/runner/runner.cmake)
 
+# Releases contain the complete native program. Missing generated code must
+# never silently substitute a first-run compiler wizard for a playable game.
+if(SNESRECOMP_SETUP_HOST)
+    message(FATAL_ERROR "Super Metroid requires precompiled generated code; setup-host builds are retired. Run tools/regen.sh with your ROM first.")
+endif()
+
 # The desktop host's headers (host_clock.h, ...) moved out of the runner's
 # default include set; every target here that uses them needs the directory.
 list(APPEND SNESRECOMP_RUNNER_INCLUDE_DIRS ${SNESRECOMP_ROOT}/runner/src/desktop)
@@ -70,14 +76,9 @@ if(BUILD_TESTING AND NOT ANDROID)
         ${SNESRECOMP_ROOT}/runner/src/snes_overlay_draw.c)
     target_include_directories(sm_savestate_gesture_test PRIVATE
         ${SNESRECOMP_RUNNER_INCLUDE_DIRS})
-    # snes_savestate_menu.c reaches SDL only for the SDLK_* keycodes, so the
-    # headers are enough; nothing here links an SDL library.
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(SM_TEST_SDL2 QUIET sdl2)
-        target_include_directories(sm_savestate_gesture_test PRIVATE
-            ${SM_TEST_SDL2_INCLUDE_DIRS})
-    endif()
+    # Use the selected desktop backend on every release runner. Looking for
+    # SDL2 headers breaks a toolchain which only supplies the default SDL3.
+    snesrecomp_target_sdl(sm_savestate_gesture_test)
     add_test(NAME sm_savestate_gesture COMMAND sm_savestate_gesture_test)
 
     add_executable(ppu_window_test tests/ppu_window_test.c)
@@ -86,6 +87,8 @@ if(BUILD_TESTING AND NOT ANDROID)
     add_test(NAME ppu_widescreen_windows COMMAND ppu_window_test)
     add_test(NAME sm_door_audio_trace
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/door_audio_trace_test.py)
+    add_test(NAME sm_release_payload
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/release_payload_test.py)
 
 endif()
 
@@ -127,7 +130,9 @@ if(BUILD_TESTING AND NOT ANDROID)
         ${SNESRECOMP_RUNNER_INCLUDE_DIRS}
         ${SNESRECOMP_ROOT}/runner/src/desktop)
     # Assertions are the test oracle, including Release configurations.
-    foreach(sm_test sm_video_test sm_renderer_test)
+    foreach(sm_test sm_display_test sm_overlay_blit_test
+            sm_savestate_gesture_test ppu_window_test sm_video_test
+            sm_renderer_test sm_mode7_test)
         if(MSVC)
             target_compile_options(${sm_test} PRIVATE /UNDEBUG)
         else()
@@ -150,11 +155,8 @@ endif()
 # already expose the same knob.
 set(SM_GEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/gen" CACHE PATH
     "Directory containing the private generated Super Metroid C sources")
-# Added to the target by snesrecomp_target_generated_code() below, once the
-# target exists. That helper owns both outcomes: the generated C when it is
-# there, and -- only with -DSNESRECOMP_SETUP_HOST=ON -- the setup-host
-# dispatch tables when it is not. An empty src/gen without that option stays
-# the hard error it has always been, in the framework's words.
+# Added by snesrecomp_target_generated_code() below. Generation is a
+# developer/release step; missing output is a hard build error.
 
 # What this port actually owns.
 #
@@ -228,18 +230,13 @@ endif()
 # hooks. Before 2026-09 all of it was a 2,800-line private copy of the host in
 # src/main.c, ahead of the framework's in places and behind it in others.
 snesrecomp_target_desktop_host(SuperMetroidSNESRecomp TIER2)
-# The recompiled banks, or the setup host when there are none and the build
-# asked for one. The release workflow builds exactly that: CI has no ROM, so
-# it cannot generate, and what it can honestly ship is a setup pack whose
-# launcher regenerates on the player's machine.
+# Every platform compiles and links the same generated program.
 snesrecomp_target_generated_code(SuperMetroidSNESRecomp ${SM_GEN_DIR})
 # gen_stubs.c holds this port's hand-written bodies for hle_func targets. They
 # are part of the recompiled code's surface -- they call into generated banks
 # and are called from them -- so they belong to the same build as src/gen and
 # not to a setup host, which has neither.
-if(NOT SNESRECOMP_SETUP_HOST)
-    target_sources(SuperMetroidSNESRecomp PRIVATE src/gen_stubs.c)
-endif()
+target_sources(SuperMetroidSNESRecomp PRIVATE src/gen_stubs.c)
 # rom.cfg at the repo root (git-ignored, the ROM's absolute path) is staged
 # beside the executable when none is there yet, so a launch opens on it.
 snesrecomp_target_rom_cache(SuperMetroidSNESRecomp)
@@ -264,9 +261,9 @@ snesrecomp_target_fiber_compat(SuperMetroidSNESRecomp)
 # Release version stamp: configure with -DSNESRECOMP_BUILD_VERSION=<ver>
 # (the CMake equivalent of the MSVC games' /p:SnesRecompBuildVersion); it
 # lands in the post-mortem report's "build" section via the
-# SNESRECOMP_BUILD_VERSION define. Unset (local builds) the define is
-# omitted and main.c defaults to "dev".
-set(SNESRECOMP_BUILD_VERSION "" CACHE STRING
+# SNESRECOMP_BUILD_VERSION define. Local builds default to PROJECT_VERSION;
+# explicitly setting the cache entry empty keeps main.c's "dev" fallback.
+set(SNESRECOMP_BUILD_VERSION "${PROJECT_VERSION}" CACHE STRING
     "Release version stamp baked into crash reports (empty = dev)")
 if(SNESRECOMP_BUILD_VERSION)
     target_compile_definitions(SuperMetroidSNESRecomp PRIVATE
@@ -313,15 +310,9 @@ recomp_target_launcher_ui(SuperMetroidSNESRecomp
     CONSOLE snes
     BOXART ${CMAKE_CURRENT_SOURCE_DIR}/recomp/launcher/boxart.tga)
 
-# Generate & rebuild from inside the launcher: pick ROM -> recompile locally
-# -> cmake --build -> relaunch. The implementation is the framework's and the
-# host wires it (snesrecomp_codegen_host_autowire); this project contributes
-# no configuration.
-target_sources(SuperMetroidSNESRecomp PRIVATE
-    ${SNESRECOMP_ROOT}/host/snesrecomp_codegen_host.c)
-target_include_directories(SuperMetroidSNESRecomp PRIVATE
-    ${SNESRECOMP_ROOT}/host
-    ${RECOMP_UI_ROOT}/src)
+# Omit the codegen host AND its include directory. The shared desktop host
+# detects that capability by header availability; the shipped launcher only
+# selects/verifies the player's ROM and starts the precompiled game.
 
 # GLSL shader presets (CRT/scanlines) for the OpenGL desktop backend. The
 # launcher's shader dropdown scans assets/shaders beside the executable for

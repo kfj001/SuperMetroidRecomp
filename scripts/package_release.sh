@@ -1,71 +1,54 @@
 #!/usr/bin/env bash
-# Package a Super Metroid release: a SETUP PACK.
-#
-# The zip does not contain the game. It contains a setup program (the host
-# built with -DSNESRECOMP_SETUP_HOST=ON, i.e. without recompiled code), the
-# recompiler and this source tree. On first run the player picks their own
-# ROM and the launcher recompiles and rebuilds locally. No ROM, no src/gen,
-# no recomp/funcs.h ever leaves this tree in a zip -- the framework's packager
-# enforces that mechanically.
-#
-# Usage:
-#   scripts/package_release.sh [<build-dir>] [<platform-tag>] [--embed-toolchain]
-#
-# Both positionals are optional; BUILD_DIR and PLATFORM still work as env vars.
-# Defaults: build, and the host's own <os>-<arch>. --embed-toolchain copies
-# the cmake-clang-v1 pack named by RETCOMM_TOOLCHAIN_DIR into the zip so the
-# player downloads nothing.
-#
-# Writes: dist/supermetroid-<VERSION>-<platform-tag>.zip
+# Package a completed native build. Build tools and generated sources stay out.
 set -euo pipefail
-
-# A silent exit is the worst outcome a packaging step can have: the first
-# Windows CI run died here with exit 1 and not one line of output. Name the
-# command and line instead of leaving the reader to bisect a shell script.
-trap 'echo "::error::$(basename "${BASH_SOURCE[0]}") failed at line ${LINENO}: ${BASH_COMMAND}" >&2' ERR
-
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-
-EXTRA=()
-POS=()
-for a in "$@"; do
-  case "$a" in
-    --embed-toolchain|--no-embed-toolchain) EXTRA+=("$a") ;;
-    *) POS+=("$a") ;;
-  esac
-done
-BUILD_DIR="${POS[0]:-${BUILD_DIR:-build}}"
-PLATFORM="${POS[1]:-${PLATFORM:-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)}}"
-
-IMPL="snesrecomp/tools/ci/stage_setup_host.sh"
-if [ ! -f "$IMPL" ]; then
-  echo "package_release.sh: $IMPL missing — the snesrecomp pin predates setup packs." >&2
-  echo "  Update the submodule: git submodule update --init --recursive" >&2
-  exit 1
+BUILD="${1:-build}"
+PLATFORM="${2:?usage: package_release.sh BUILD PLATFORM}"
+VERSION="$(tr -d '[:space:]' < VERSION)"
+[[ "${RELEASE_VERSION:-$VERSION}" == "$VERSION" ]]
+grep -q '^SNESRECOMP_SETUP_HOST:BOOL=OFF$' "$BUILD/CMakeCache.txt"
+grep -q "^SNESRECOMP_BUILD_VERSION:STRING=$VERSION$" "$BUILD/CMakeCache.txt"
+NAME="supermetroid-$VERSION-$PLATFORM"
+STAGE="$ROOT/dist/$NAME"
+[[ ! -e "$STAGE" ]] || { echo "Stage already exists: $STAGE" >&2; exit 1; }
+EXE=SuperMetroidSNESRecomp
+[[ "$PLATFORM" != windows-* ]] || EXE="$EXE.exe"
+[[ -f "$BUILD/$EXE" && -d "$BUILD/assets" ]]
+mkdir -p "$STAGE"
+cp "$BUILD/$EXE" "$STAGE/"
+cp -R "$BUILD/assets" "$STAGE/"
+cp VERSION framework_pins.txt README.md LICENSE "$STAGE/"
+cp profiles/release.json "$STAGE/release-profile.json"
+# Repository defaults only. Never copy a developer's keybinds, ROM paths, saves,
+# writable mods, video settings or mute configuration from a build directory.
+cp config.ini "$STAGE/"
+mkdir -p "$STAGE/docs"
+cp docs/custom-renderer.md "$STAGE/docs/"
+cp -R docs/images "$STAGE/docs/"
+bash snesrecomp/tools/ci/bundle_runtime_libs.sh \
+  --exe "$STAGE/$EXE" --stage "$STAGE" --build-dir "$BUILD" --strict
+if [[ "$PLATFORM" == linux-* ]]; then
+  cat > "$STAGE/Launch.sh" <<'LAUNCH'
+#!/bin/sh
+HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+export LD_LIBRARY_PATH="$HERE${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+cd "$HERE" || exit 1
+exec "$HERE/SuperMetroidSNESRecomp" "$@"
+LAUNCH
+  chmod +x "$STAGE/Launch.sh"
+elif [[ "$PLATFORM" == macos-* ]]; then
+  # Re-sign after rewriting dylib paths; preserve the native executable bit.
+  find "$STAGE" -name '*.dylib' -exec codesign --force --sign - {} \;
+  codesign --force --sign - "$STAGE/$EXE"
 fi
-
-# The ROM hint and digests come from rom_identity.txt -- the same file the
-# build compiles in and tools/regen.sh verifies against -- so a revision bump
-# is one edit. stage_setup_host.sh already needs python3, so this does too.
-IDENTITY_TOOL="snesrecomp/tools/rom_identity.py"
-ROM_FILE="$(python3 "$IDENTITY_TOOL" rom_identity.txt --get rom_file)"
-ROM_SHA256="$(python3 "$IDENTITY_TOOL" rom_identity.txt --get expected_sha256)"
-ROM_CRC32="$(python3 "$IDENTITY_TOOL" rom_identity.txt --get expected_crc32)"
-
-# No --runtime-dir here: this port has no mod catalog (its presentation mods
-# are compiled in, src/sm_mods.c) and stages nothing else exe-relative beyond
-# the launcher assets the staging tool handles itself. Add --runtime-dir <name>
-# if that changes -- the tool fails loudly when a named directory is absent.
-exec bash "$IMPL" \
-  --build-dir "$BUILD_DIR" \
-  --artifact "$PLATFORM" \
-  --exe-name SuperMetroidSNESRecomp \
-  --zip-prefix supermetroid \
-  --display-name "Super Metroid" \
-  --rom-hint "$ROM_FILE" \
-  --rom-sha256 "$ROM_SHA256" \
-  --rom-crc32 "$ROM_CRC32" \
-  "${EXTRA[@]+"${EXTRA[@]}"}"
+python3 - "$STAGE" <<'PY'
+from pathlib import Path
+import sys, zipfile
+stage = Path(sys.argv[1])
+with zipfile.ZipFile(str(stage) + '.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+    for path in sorted(stage.rglob('*')):
+        if path.is_file():
+            archive.write(path, path.relative_to(stage.parent).as_posix())
+PY
+python3 tools/release_payload.py audit "$STAGE.zip"

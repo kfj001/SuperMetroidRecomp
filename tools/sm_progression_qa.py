@@ -95,7 +95,7 @@ class Rom:
 
 
 class Session:
-    def __init__(self, exe, rom, output, port=0, floor=None, wide=False, interpreter_only=False, interpret_targets=(), seed_sram=None):
+    def __init__(self, exe, rom, output, port=0, floor=None, wide=False, interpreter_only=False, interpret_targets=(), seed_sram=None, capture_profile=False):
         with socket.socket() as reservation:
             reservation.bind(('127.0.0.1', port))
             port = reservation.getsockname()[1]
@@ -120,6 +120,10 @@ class Session:
                 env.pop(key)
         env.update(SDL_AUDIODRIVER='dummy', SDL_AUDIO_DRIVER='dummy',
                    SNESRECOMP_DEBUG_PORT=str(port))
+        if capture_profile:
+            env.update(SNESRECOMP_TIER2_CAPTURE='1',
+                       SNESRECOMP_TIER2_MANIFEST=str(self.output / 'tier2-profile.json'),
+                       SNESRECOMP_TIER2_JOURNAL=str(self.output / 'tier2-profile.jsonl'))
         if floor:
             env['SNESRECOMP_EXECUTION_MODE'] = floor
         if interpreter_only:
@@ -543,6 +547,8 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--port', type=int, default=0, help='TCP port; default chooses an available local port')
     parser.add_argument('--floor', choices=('off', 'lle', 'hle'))
+    parser.add_argument('--capture-profile', action='store_true',
+                        help='capture an identified tier-2 profile in the private QA output')
     parser.add_argument('--wide', action='store_true')
     parser.add_argument('--interpreter-only', action='store_true', help='reference run with AOT bounces disabled')
     parser.add_argument('--interpret-targets', nargs='*', type=lambda x: int(x, 16), default=[])
@@ -573,7 +579,7 @@ def main():
                   executable_sha256=hashlib.sha256(args.exe.read_bytes()).hexdigest(),
                   arguments={key: str(value) if isinstance(value, Path) else value
                              for key, value in vars(args).items()}, cases=[])
-    game = Session(args.exe, args.rom, args.output, args.port, args.floor, args.wide, args.interpreter_only, args.interpret_targets, args.seed_sram)
+    game = Session(args.exe, args.rom, args.output, args.port, args.floor, args.wide, args.interpreter_only, args.interpret_targets, args.seed_sram, args.capture_profile)
     def write_report():
         (game.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     write_report()

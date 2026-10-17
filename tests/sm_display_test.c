@@ -1,4 +1,5 @@
 #include "sm_display.h"
+#include "widescreen.h"
 
 #include <assert.h>
 #include <limits.h>
@@ -7,9 +8,9 @@ static void test_widths(void) {
   assert(SmDisplay_ComputeFrameWidth(4, 3, true) == 256);
   assert(SmDisplay_ComputeFrameWidth(16, 10, true) == 308);
   assert(SmDisplay_ComputeFrameWidth(16, 9, true) == 342);
-  assert(SmDisplay_ComputeFrameWidth(21, 9, true) == 446);
+  assert(SmDisplay_ComputeFrameWidth(21, 9, true) == 448);
   assert(SmDisplay_ComputeFrameWidth(1, 2, true) == 256);
-  assert(SmDisplay_ComputeFrameWidth(INT_MAX, 1, true) == 446);
+  assert(SmDisplay_ComputeFrameWidth(INT_MAX, 1, true) == 256 + 2 * kWsExtraMax);
   assert(SmDisplay_ComputeFrameWidth(0, 0, true) == 256);
   assert(SmDisplay_ComputeFrameWidth(16, 9, false) == 256);
 }
