@@ -130,7 +130,9 @@ if(BUILD_TESTING AND NOT ANDROID)
         ${SNESRECOMP_RUNNER_INCLUDE_DIRS}
         ${SNESRECOMP_ROOT}/runner/src/desktop)
     # Assertions are the test oracle, including Release configurations.
-    foreach(sm_test sm_video_test sm_renderer_test)
+    foreach(sm_test sm_display_test sm_overlay_blit_test
+            sm_savestate_gesture_test ppu_window_test sm_video_test
+            sm_renderer_test sm_mode7_test)
         if(MSVC)
             target_compile_options(${sm_test} PRIVATE /UNDEBUG)
         else()
