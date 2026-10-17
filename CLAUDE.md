@@ -57,7 +57,14 @@ Game-side ctest targets: `sm_display_geometry`, `ppu_widescreen_windows`, `sm_wi
 
 ### Generation pipeline
 
-`recomp/bankXX.cfg` files carry per-bank directives: `func <Name> <pc> end:<next>` boundaries (harvested from the snesrev/sm decomp — the symbol/behavior ground truth), `hle_func` (route a PC to a hand-written C body), and `indirect_dispatch` (authorize `JSR (abs,X)`-style indirect calls with enumerated targets; dispatch target tables come from `recomp/sm_decomp_symbols.json`). `tools/regen.sh` drives `snesrecomp/tools/v2_emit.py` with `--cfg-roots` (every cfg `func` declaration is an analysis root) and syncs `recomp/funcs.h`. **That default exists to match what a player's regen does** — the in-launcher "Generate & rebuild" wizard (`snesrecomp_codegen_host_autowire()`) hardcodes `--cfg-roots` and cannot pass a profile manifest at all, and CI only ever builds a setup host, so a dev default that differed meant the only configuration anyone ships was the one nobody built. `profiles/attract_tier2.json` is now opt-in (`--profile-manifest profiles/attract_tier2.json`) for the tier-2 burn-down loop; it adds ~278 AOT variants a player's tree does not have, so do not benchmark or ship a tree built with it without saying so. This worktree no longer applies guest widescreen overrides. Unauthorized indirect calls with WRAM pointer bases become runtime dispatches through `cpu_dispatch_*` in the runner.
+`recomp/bankXX.cfg` files carry the per-bank directives and correctness exclusions.
+`tools/regen.sh` delegates to `tools/regen.py`, which verifies the ROM and
+builds `profiles/release.json` using the pinned native analyzer. CFG declarations
+seed AOT coverage; unproved code retains the portable ROM interpreter fallback.
+All release platforms compile the same generated program. Setup hosts and the
+in-launcher Generate & rebuild wizard are retired. Generated C stays private
+and is never committed or publicly packaged. See `docs/precompiled-releases.md`.
+
 
 ### Single-fiber frame model (src/sm_rtl.c)
 

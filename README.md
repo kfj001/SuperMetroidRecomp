@@ -70,11 +70,11 @@ Screenshots supplied by the project owner from the custom-renderer build.
 
 ## Releases
 
-Download the setup ZIP for Windows x64, Linux x64, macOS arm64 or macOS x64
-from this repository's Releases page. Extract the whole archive and run its
-setup program. Select your own unmodified Super Metroid (Japan, USA) ROM;
-the launcher generates and builds the playable game locally. Build tools are
-included in the setup packs. No ROM or saved progress is included.
+Download the precompiled ZIP for Windows x64, Linux x64, macOS arm64 or macOS
+x64 from this repository's Releases page. Extract the entire folder and start
+the executable (on Linux, start `Launch.sh`). Select your own unmodified Super
+Metroid (Japan, USA) ROM and play. No compiler, Python, Rust, CMake, source or
+toolchain download is needed. No ROM or saved progress is included.
 
 Open **Mods** in the launcher to enable **Widescreen** (Fit, 16:9, 21:9 or 32:9)
 and choose edge-anchored or centered HUD placement. **Presentation FPS** is a
@@ -83,18 +83,19 @@ turning both off uses stock rendering. Game logic retains its native timing.
 These features are experimental: full-game visual fidelity is not certified,
 and achievable FPS depends on hardware and the scene.
 
-Settings and saves live beside the executable/AppImage. Keep that directory
+Settings and saves live beside the executable. Keep that directory
 writable, and preserve your settings and `saves/` when updating. The detailed
 implementation and validation record is in `docs/custom-renderer.md`.
+The release procedure and profile are documented in `docs/precompiled-releases.md`.
+Host snapshots require matching runtime builds; use guest SRAM when upgrading.
 
 ## Building from source
 
 Prerequisites: a `snesrecomp` checkout at `./snesrecomp` (junction/symlink
-to the sibling repo, pinned in `snesrecomp.pin`), a verified Super Metroid
+to the sibling repo, pinned in `framework_pins.txt`), a verified Super Metroid
 ROM at the repo root, SDL3 + OpenGL, and the mingw64 toolchain (cmake,
-gcc, ninja) on `PATH`. Regeneration also requires `rustup`; it builds and
-requires the fast native analyzer by default. Set
-`SNESRECOMP_ANALYSIS_BACKEND=python` only to use the slower reference path.
+gcc, ninja) on `PATH`. Regeneration also requires `rustup` and the native
+analyzer. `profiles/release.json` records the shared release generation recipe.
 
 ```sh
 # 1. (once) clone the snesrev/sm decomp as the symbol/oracle reference
