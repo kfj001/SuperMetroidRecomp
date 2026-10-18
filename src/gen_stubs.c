@@ -306,10 +306,27 @@ extern void ReleaseButtonsFilter(uint16);
 extern void DrawPauseMenuDuringFadeIn(void);
 extern void HandleFadeIn(void);
 extern void HandleFadeOut(void);
-extern void SetPauseScreenButtonLabelPalettes(void);
+/* The three palette variants the cfg emits for $02:A628/A6DF/A796. The
+ * un-numbered dispatcher that picks between them ($02:A615) was absorbed into
+ * HighlightPauseScreenButton's cfg range, so it is reproduced here from the
+ * sm decomp (sm_82.c: kSetPauseScreenButtonLabelPalettes_Funcs[mode]()). */
+extern void SetPauseScreenButtonLabelPalettes_0(CpuState *cpu);
+extern void SetPauseScreenButtonLabelPalettes_1(CpuState *cpu);
+extern void SetPauseScreenButtonLabelPalettes_2(CpuState *cpu);
 extern void UpdatePauseMenuLRStartVramTilemap(void);
 extern void QueueSfx1_Max6(uint16);
-extern void SaveSRAM(void);
+/* sm decomp names this SaveToSram ($01:8000); it takes the selected save slot
+ * in A, which the recompiled body reads from the CPU state. */
+extern void SaveToSram(CpuState *cpu);
+
+static void SetPauseScreenButtonLabelPalettes(void) {
+  switch (pausemenu_button_label_mode) {
+    case 0: SetPauseScreenButtonLabelPalettes_0(&g_cpu); break;
+    case 1: SetPauseScreenButtonLabelPalettes_1(&g_cpu); break;
+    case 2: SetPauseScreenButtonLabelPalettes_2(&g_cpu); break;
+    default: break;
+  }
+}
 
 /* Forward declarations for new HLE functions (defined below) */
 static void HleSmGameOptionsScreen_Impl(void);
@@ -491,7 +508,7 @@ void HleSmMapToOptions_FadeIn(void) {
 
 void HleSmGracefulExit(void) {
   /* Save SRAM and exit to launcher */
-  SaveSRAM();
+  SaveToSram(&g_cpu);
   screen_fade_delay = 1;
   screen_fade_counter = 1;
   game_state = kGameState_ExitToLauncher;
