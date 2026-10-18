@@ -265,3 +265,265 @@ SM_JML1784_WRAPPER(HleSmJmlIndirect1784_A3AC, 0x20A3ACu)
 
 #undef SM_JML1784_WRAPPER
 #undef SM_JML178C_WRAPPER
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Extended Pause Menu — 3rd "Game Options" Tab
+ *
+ * Replaces GameState_15_Paused_Async (0x8290E8), HandlePauseScreenLrInput
+ * (0x82A50C), and HandlePauseScreenStart (0x82A5B7) to add a third top-level
+ * tab alongside Map and Equipment.
+ *
+ * menu_index (RAM 0x07E1A) values:
+ *   0 = Map Screen
+ *   1 = Equipment Screen
+ *   2 = Game Options Screen (NEW)
+ *   3 = Map->Equipment Load (orig)
+ *   4 = Map->Equipment FadeIn (orig)
+ *   5 = Equipment->Map Load (orig)
+ *   6 = Equipment->Map FadeIn (orig)
+ *   7 = Equipment->Options Load (NEW)
+ *   8 = Equipment->Options FadeIn (NEW)
+ *   9 = Options->Map Load (NEW)
+ *  10 = Options->Map FadeIn (NEW)
+ *  11 = Options->Map FadeIn Complete -> back to Map (NEW)
+ *  12 = Map->Options Load (NEW)
+ *  13 = Map->Options FadeIn (NEW)
+ * ────────────────────────────────────────────────────────────────────── */
+
+static uint16 s_game_options_cursor;
+
+/* Forward declarations for original functions we still call for transitions.
+ * These are resolved at link time via funcs.h (generated from the cfg). */
+extern void PauseMenu_0_MapScreen(void);
+extern void PauseMenu_1_EquipmentScreen(void);
+extern void PauseMenu_3_MapToEquipment_Load(void);
+extern void PauseMenu_4_MapToEquipment_FadeIn(void);
+extern void PauseMenu_6_EquipmentToMap_Load(void);
+extern void PauseMenu_7_EquipmentToMap_FadeIn(void);
+extern void HandlePauseScreenPaletteAnimation(void);
+extern void HandleHudTilemap(void);
+extern void ReleaseButtonsFilter(uint16);
+extern void DrawPauseMenuDuringFadeIn(void);
+extern void HandleFadeIn(void);
+extern void HandleFadeOut(void);
+extern void SetPauseScreenButtonLabelPalettes(void);
+extern void UpdatePauseMenuLRStartVramTilemap(void);
+extern void QueueSfx1_Max6(uint16);
+extern void SaveSRAM(void);
+
+/* Forward declarations for new HLE functions (defined below) */
+static void HleSmGameOptionsScreen_Impl(void);
+static void HleSmEquipmentToOptions_Load(void);
+static void HleSmEquipmentToOptions_FadeIn(void);
+static void HleSmMapToOptions_Load(void);
+static void HleSmMapToOptions_FadeIn(void);
+static void HleSmGracefulExit(void);
+
+/* Simple text drawing helper - uses the existing VRAM tilemap approach */
+static void DrawGameOptionsText(const char *text, uint16 x, uint16 y, uint16 color) {
+  /* For now, reuse the existing EquipmentScreenDrawItemSelector approach
+   * but we need a simpler way. The game uses tilemaps in VRAM for text.
+   * We'll write directly to the BG1 tilemap area used by the pause menu. */
+  (void)text; (void)x; (void)y; (void)color;
+  /* TODO: Implement proper text rendering using the game's font tiles.
+   * For MVP, we'll use the existing item selector highlight as a cursor
+   * and rely on the pre-rendered "GAME OPTIONS" tilemap we set up. */
+}
+
+RecompReturn HleSmGameState_15_Paused_Async(CpuState *cpu) {
+  if (interp_bridge_in_lle_scheduler())
+    return interp_bridge_lle_yield_unwind(cpu, 0x8290E8u);
+
+  ReleaseButtonsFilter(3);
+
+  uint16 idx = menu_index;
+
+  if (idx == 0) {
+    PauseMenu_0_MapScreen();
+  } else if (idx == 1) {
+    PauseMenu_1_EquipmentScreen();
+  } else if (idx == 2) {
+    /* Game Options screen - main loop */
+    HleSmGameOptionsScreen_Impl();
+  } else if (idx == 3) {
+    PauseMenu_3_MapToEquipment_Load();
+  } else if (idx == 4) {
+    PauseMenu_4_MapToEquipment_FadeIn();
+  } else if (idx == 5) {
+    HandleFadeOut();
+    if (reg_INIDISP == 0x80) {
+      ++menu_index;
+    }
+  } else if (idx == 6) {
+    PauseMenu_6_EquipmentToMap_Load();
+  } else if (idx == 7) {
+    PauseMenu_7_EquipmentToMap_FadeIn();
+  } else if (idx == 8) {
+    /* Equipment -> Options transition: Load */
+    HleSmEquipmentToOptions_Load();
+  } else if (idx == 9) {
+    /* Equipment -> Options transition: FadeIn */
+    HleSmEquipmentToOptions_FadeIn();
+  } else if (idx == 10) {
+    /* Options -> Map transition: Load */
+    HandleFadeOut();
+    if (reg_INIDISP == 0x80) {
+      ++menu_index;
+    }
+  } else if (idx == 11) {
+    /* Options -> Map transition: FadeIn (reuse Equipment->Map fade in) */
+    PauseMenu_7_EquipmentToMap_FadeIn();
+    menu_index = 0;
+  } else if (idx == 12) {
+    /* Map -> Options transition: Load */
+    HleSmMapToOptions_Load();
+  } else if (idx == 13) {
+    /* Map -> Options transition: FadeIn */
+    HleSmMapToOptions_FadeIn();
+  }
+
+  HandleHudTilemap();
+  HandlePauseScreenPaletteAnimation();
+
+  cpu->S = (uint16)(cpu->S + 3);
+  return RECOMP_RETURN_NORMAL;
+}
+
+void HleSmGameOptionsScreen_Impl(void) {
+  /* Handle L/R for 3-way tab cycling */
+  if ((newly_held_down_timed_held_input & kButton_L) != 0) {
+    if (!pausemenu_button_label_mode) return;
+    uint16 idx = menu_index;
+    if (idx == 0) { menu_index = 12; }          /* Map -> Options */
+    else if (idx == 2) { menu_index = 9; }      /* Options -> Map (then R to Equipment) */
+    else if (idx == 1) { menu_index = 5; }      /* Equipment -> Map (existing) */
+    pausemenu_button_label_mode = 0;
+    SetPauseScreenButtonLabelPalettes();
+    return;
+  }
+  if ((newly_held_down_timed_held_input & kButton_R) != 0) {
+    if (!pausemenu_button_label_mode) return;
+    uint16 idx = menu_index;
+    if (idx == 0) { menu_index = 2; }           /* Map -> Equipment (existing) */
+    else if (idx == 1) { menu_index = 7; }      /* Equipment -> Options */
+    else if (idx == 2) { menu_index = 9; }      /* Options -> Map */
+    pausemenu_button_label_mode = 0;
+    SetPauseScreenButtonLabelPalettes();
+    return;
+  }
+
+  /* Handle Start to unpause */
+  if ((newly_held_down_timed_held_input & kButton_Start) != 0) {
+    QueueSfx1_Max6(0x38);
+    screen_fade_delay = 1;
+    screen_fade_counter = 1;
+    uint16 v0 = pausemenu_button_label_mode;
+    pausemenu_button_label_mode = 1;
+    SetPauseScreenButtonLabelPalettes();
+    pausemenu_button_label_mode = v0;
+    pausemenu_start_lr_pressed_highlight_timer = 11;
+    ++game_state;
+    return;
+  }
+
+  /* D-pad navigation for menu cursor */
+  if ((joypad1_newkeys & kButton_Up) != 0) {
+    s_game_options_cursor = (s_game_options_cursor + 4) % 5;
+    QueueSfx1_Max6(0x37);
+  }
+  if ((joypad1_newkeys & kButton_Down) != 0) {
+    s_game_options_cursor = (s_game_options_cursor + 1) % 5;
+    QueueSfx1_Max6(0x37);
+  }
+
+  /* A button selection */
+  if ((joypad1_newkeys & kButton_A) != 0) {
+    QueueSfx1_Max6(0x38);
+    switch (s_game_options_cursor) {
+      case 0: HleSmGracefulExit(); break;
+      case 1: /* Toggle FPS - reuse existing FPS mod */ break;
+      case 2: /* Toggle Widescreen - reuse existing widescreen mod */ break;
+      case 3: /* Audio Settings - placeholder */ break;
+      case 4: menu_index = 0; s_game_options_cursor = 0; break; /* Back to Map */
+    }
+  }
+
+  pause_screen_mode = 2;  /* Custom mode for our screen */
+}
+
+void HleSmEquipmentToOptions_Load(void) {
+  /* Fade out equipment screen, prepare options screen */
+  HandleFadeOut();
+  if (reg_INIDISP == 0x80) {
+    ++menu_index;
+  }
+}
+
+void HleSmEquipmentToOptions_FadeIn(void) {
+  /* Fade in options screen - reuse equipment fade-in logic but for our screen */
+  DrawPauseMenuDuringFadeIn();
+  HandleFadeIn();
+  if (reg_INIDISP == 15) {
+    screen_fade_delay = 0;
+    screen_fade_counter = 0;
+    ++menu_index;
+  }
+}
+
+void HleSmMapToOptions_Load(void) {
+  /* Fade out map screen, prepare options screen */
+  HandleFadeOut();
+  if (reg_INIDISP == 0x80) {
+    ++menu_index;
+  }
+}
+
+void HleSmMapToOptions_FadeIn(void) {
+  /* Fade in options screen */
+  DrawPauseMenuDuringFadeIn();
+  HandleFadeIn();
+  if (reg_INIDISP == 15) {
+    screen_fade_delay = 0;
+    screen_fade_counter = 0;
+    menu_index = 2;  /* Now on Options screen */
+  }
+}
+
+void HleSmGracefulExit(void) {
+  /* Save SRAM and exit to launcher */
+  SaveSRAM();
+  screen_fade_delay = 1;
+  screen_fade_counter = 1;
+  game_state = kGameState_ExitToLauncher;
+}
+
+RecompReturn HleSmHandlePauseScreenLrInput(CpuState *cpu) {
+  if (interp_bridge_in_lle_scheduler())
+    return interp_bridge_lle_yield_unwind(cpu, 0x82A50Cu);
+
+  /* The 3-way cycling is now handled in HleSmGameOptionsScreen_Impl
+   * but we keep this for when on Map/Equipment screens */
+  cpu->S = (uint16)(cpu->S + 3);
+  return RECOMP_RETURN_NORMAL;
+}
+
+RecompReturn HleSmHandlePauseScreenStart(CpuState *cpu) {
+  if (interp_bridge_in_lle_scheduler())
+    return interp_bridge_lle_yield_unwind(cpu, 0x82A5B7u);
+
+  if ((newly_held_down_timed_held_input & kButton_Start) != 0) {
+    QueueSfx1_Max6(0x38);
+    screen_fade_delay = 1;
+    screen_fade_counter = 1;
+    uint16 v0 = pausemenu_button_label_mode;
+    pausemenu_button_label_mode = 1;
+    SetPauseScreenButtonLabelPalettes();
+    pausemenu_button_label_mode = v0;
+    pausemenu_start_lr_pressed_highlight_timer = 11;
+    ++game_state;
+  }
+  UpdatePauseMenuLRStartVramTilemap();
+
+  cpu->S = (uint16)(cpu->S + 3);
+  return RECOMP_RETURN_NORMAL;
+}

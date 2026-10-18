@@ -2,6 +2,7 @@
 #define SM_SM_RTL_H_
 #include "common_rtl.h"
 #include "common_cpu_infra.h"
+#include "cpu_state.h"
 #include "snes/snes_regs.h"
 
 /* Per-frame host orchestration for Super Metroid (see sm_rtl.c). */
@@ -11,6 +12,11 @@ void RunOneFrameOfGame(void);
 /* Yield the game fiber back to the host (called from the WaitForNMI
  * HLE in gen_stubs.c). */
 void sm_host_yield(void);
+
+/* Extended Pause Menu HLE replacements (see gen_stubs.c) */
+RecompReturn HleSmGameState_15_Paused_Async(CpuState *cpu);
+RecompReturn HleSmHandlePauseScreenLrInput(CpuState *cpu);
+RecompReturn HleSmHandlePauseScreenStart(CpuState *cpu);
 
 /* File snapshot extension for the default LLE scheduler (no host pointers). */
 void SmStateSaveExtra(struct SaveLoadInfo *sli);
