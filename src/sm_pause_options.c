@@ -11,8 +11,8 @@ static const char *kSmVideoConfig = "sm-video.ini";
 
 enum {
   SM_PO_WIDESCREEN = 0,
-  SM_PO_FPS,
   SM_PO_HUD,
+  SM_PO_FPS,
   SM_PO_ASPECT,
   SM_PO_BACK,
   SM_PO_COUNT
@@ -35,13 +35,27 @@ static bool g_leave;
 
 static const char *const kLabels[SM_PO_COUNT] = {
   "WIDESCREEN",
-  "PRESENTATION FPS",
   "HUD ANCHORING",
+  "PRESENTATION FPS",
   "ASPECT RATIO",
   "BACK TO MAP",
 };
 
 static bool Toggle(bool *value) { *value = !*value; return true; }
+
+/* Whether the row can be interacted with. HUD anchoring only applies when
+ * widescreen is on, so it is grayed out / disabled otherwise. */
+static bool RowEnabled(int row) {
+  switch (row) {
+    case SM_PO_HUD: return g_sm_video.enhanced;
+    default:        return true;
+  }
+}
+
+/* Visual indent (in pixels) so HUD anchoring sits suborned under Widescreen. */
+static int RowIndent(int row) {
+  return row == SM_PO_HUD ? 4 * 8 : 0;
+}
 
 static bool CycleAspect(int delta) {
   int a = (int)g_sm_video.aspect + (delta < 0 ? -1 : 1);
@@ -57,7 +71,11 @@ static void SaveSettings(void) { SmVideoSave(&g_sm_video, kSmVideoConfig); }
  * persist). BACK is an intent, not a setting. */
 static bool ApplyRow(int row, int delta) {
   switch (row) {
-    case SM_PO_WIDESCREEN: return Toggle(&g_sm_video.enhanced);
+    case SM_PO_WIDESCREEN:
+      // When enabling widescreen, default HUD anchoring to ON (Edges)
+      if (delta > 0 && !g_sm_video.enhanced)
+        g_sm_video.hud_anchored = true;
+      return Toggle(&g_sm_video.enhanced);
     case SM_PO_FPS:        return Toggle(&g_sm_video.fps_enabled);
     case SM_PO_HUD:        return Toggle(&g_sm_video.hud_anchored);
     case SM_PO_ASPECT:     return CycleAspect(delta);
@@ -77,22 +95,28 @@ bool SmPauseOptions_IsActive(void) { return g_active; }
 
 void SmPauseOptions_Move(int delta) {
   if (!g_active || delta == 0) return;
-  int c = g_cursor + delta;
-  if (c < 0) c = SM_PO_COUNT - 1;
-  if (c >= SM_PO_COUNT) c = 0;
-  g_cursor = c;
+  int c = g_cursor;
+  for (int step = 0; step < SM_PO_COUNT; ++step) {
+    c += delta;
+    if (c < 0) c = SM_PO_COUNT - 1;
+    if (c >= SM_PO_COUNT) c = 0;
+    if (RowEnabled(c)) {
+      g_cursor = c;
+      return;
+    }
+  }
 }
 
 void SmPauseOptions_Adjust(int delta) {
   if (!g_active) return;
-  if (ApplyRow(g_cursor, delta)) SaveSettings();
+  if (RowEnabled(g_cursor) && ApplyRow(g_cursor, delta)) SaveSettings();
 }
 
 void SmPauseOptions_Activate(void) {
   if (!g_active) return;
   if (g_cursor == SM_PO_BACK)
     g_leave = true;
-  else if (ApplyRow(g_cursor, 1))
+  else if (RowEnabled(g_cursor) && ApplyRow(g_cursor, 1))
     SaveSettings();
 }
 
@@ -152,16 +176,22 @@ void SmPauseOptions_Render(uint32_t *dst, int stride, int width, int height) {
     const int row_h = 20;
     for (int i = 0; i < SM_PO_COUNT; ++i, row_y += row_h) {
       bool sel = (i == g_cursor);
+      bool enabled = RowEnabled(i);
+      int indent  = RowIndent(i);
+      uint32_t label_col = sel ? COL_SEL : (enabled ? COL_TEXT : COL_DIM);
+      uint32_t value_col = sel ? COL_ACCENT : (enabled ? COL_TEXT : COL_DIM);
       if (sel)
-        snes_ovl_fill_rect(dst, stride, height, 14, row_y - 4, width - 28, 15, COL_SELBG);
-      snes_ovl_draw_text(dst, stride, height, 22, row_y, kLabels[i],
-                         sel ? COL_SEL : COL_TEXT, 1);
+        snes_ovl_fill_rect(dst, stride, height, 14 + indent, row_y - 4,
+                          width - 28 - indent, 15, COL_SELBG);
+      snes_ovl_draw_text(dst, stride, height, 22 + indent, row_y,
+                         kLabels[i], label_col, 1);
       const char *v = RowValue(i);
       if (*v) {
         int len = 0;
         for (const char *p = v; *p; ++p) ++len;
-        snes_ovl_draw_text(dst, stride, height, width - 22 - len * 8, row_y, v,
-                           sel ? COL_ACCENT : COL_TEXT, 1);
+        snes_ovl_draw_text(dst, stride, height,
+                           width - 22 - indent - len * 8, row_y, v,
+                           value_col, 1);
       }
     }
   }
