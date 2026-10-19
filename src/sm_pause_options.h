@@ -1,55 +1,55 @@
 #pragma once
 
 /*
- * Game Options — the third pause-menu tab.
+ * Options -- the third pause-menu tab (Map, Equipment, Options).
  *
- * Super Metroid's pause menu has room for exactly two tabs (Map and
- * Equipment); the ROM's L/R handler hard-codes `menu_index = 2|5` and the
- * button-label tilemap only has two highlighted states. Its menus are also
- * baked: text on the pause screen is pre-composed tilemap data DMA'd out of
- * the ROM, with no string compositor to hang a new screen off
- * (EquipmentScreenTransferBG1Tilemap -> ram3800 is the only writer, and it
- * copies fixed blobs).
+ * Super Metroid's pause menu has room for exactly two tabs. Its L/R handler
+ * hard-codes the Map<->Equipment pair, and its text is pre-composed tilemap
+ * data DMA'd out of the ROM (EquipmentScreenTransferBG1Tilemap -> ram3800
+ * copies fixed blobs), with no string compositor to hang a new screen off.
+ * So the third tab is a host panel:
  *
- * So the third tab lives where the framework already knows how to draw text:
- * the host's shared overlay primitives (snes_overlay_draw.h, the same 8x8
- * font the save-state browser uses). The guest side only owns navigation —
- * HleSmHandlePauseScreenLrInput cycles Map/Equipment/Options and parks on
- * menu_index == SM_MENU_INDEX_OPTIONS; this module owns what that screen
- * shows and does.
+ *   - The rows are a recomp-ui runtime-UI model (recomp_runtime_ui.h): it
+ *     owns navigation, disabled rows and persistence. They edit g_sm_video,
+ *     the same settings the launcher's Mods page edits, saved to
+ *     SM_VIDEO_CONFIG_FILE.
+ *   - This module draws that model in the pause screen's style with the
+ *     framework's 8x8-font overlay primitives (snes_overlay_draw.h).
+ *   - SmPauseOptions_GuestTick() is the only guest-facing part. It runs at
+ *     the entry of GameState_15_Paused_Async ($82:90E8, see
+ *     HleSmGameState_15_Paused_Async), before the ROM's own routine, in both
+ *     execution modes. While the panel is up the guest stays on its own Map
+ *     screen (menu_index 0) and every button but Start is removed from the
+ *     pad, so the ROM sees only Start (unpause).
+ *   - Leaving is the ROM's own: R/B/"Back to map" start PauseMenu_5's
+ *     fade-out to the Map, L starts PauseMenu_2's to Equipment, Start the
+ *     unpause fade. The panel stays up through the fade, dimmed with the
+ *     screen, and closes when the guest reaches the next state.
  *
- * The rows edit g_sm_video, the same struct src/main.c loads, the Mods page
- * writes and SmVideoSave persists. There is deliberately no "quit" row: the
- * framework exposes no guest-accessible way to leave the session (the old
- * scaffold's kGameState_ExitToLauncher = 0xFF was written but never read by
- * anything), so a quit row would have been an inert promise.
- *
- * The guest HLEs (src/gen_stubs.c) call the input entry points; src/main.c's
- * draw_frame hook composites Render() over the frame whenever IsActive().
+ * Whether the panel is up changes what the guest does next frame, so it is
+ * part of every snapshot (SmStateSaveExtra / SmExecStateSave). Whether it is
+ * leaving is read from guest RAM. The cursor is presentation only; a restored
+ * panel opens on its first row.
  */
 
 #include <stdbool.h>
 #include <stdint.h>
 
-/* menu_index value the guest parks on for this screen. See
- * HleSmGameState_15_Paused_Async for the full index map. */
-enum { SM_MENU_INDEX_OPTIONS = 2 };
+/* One paused frame: read joypad1_newkeys, drive the panel, and open or close
+ * it on L/R. Must run before the ROM's ReleaseButtonsFilter for the frame. */
+void SmPauseOptions_GuestTick(void);
 
-/* Called by the guest dispatcher every frame it runs the paused state.
- * Rising edge resets the cursor; falling edge hides the panel. */
+/* Opening resets the cursor to the first row; closing hides the panel. */
 void SmPauseOptions_SetActive(bool active);
 bool SmPauseOptions_IsActive(void);
 
-/* Guest input -> overlay. Move() is D-pad up/down, Adjust() is left/right on
- * the highlighted row, Activate() is A. */
-void SmPauseOptions_Move(int delta);
-void SmPauseOptions_Adjust(int delta);
-void SmPauseOptions_Activate(void);
+/* Close the panel once the guest has moved on (the fade it was leaving
+ * through is over, or the game left the paused states). Called before each
+ * frame and from the tick. */
+void SmPauseOptions_SyncToGuest(void);
 
-/* One-shot intent raised by A on "BACK TO MAP" (or the guest's B). The guest
- * consumes it to leave the screen; this module never touches menu_index or
- * game_state itself. */
-bool SmPauseOptions_ConsumeLeaveRequest(void);
+/* Whether to composite the panel over this frame. */
+bool SmPauseOptions_Visible(void);
 
 /* Composite the panel over an ARGB8888 frame. stride is in pixels. */
 void SmPauseOptions_Render(uint32_t *dst, int stride, int width, int height);

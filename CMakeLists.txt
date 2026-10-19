@@ -116,6 +116,21 @@ if(BUILD_TESTING AND NOT ANDROID)
     add_test(NAME sm_custom_video
         COMMAND sm_video_test ${CMAKE_CURRENT_BINARY_DIR}/sm-video-test.ini)
 
+    # The pause menu's Options tab: guest pause-state effects and pixels. It
+    # saves sm-video.ini, so it runs in its own directory, never beside the
+    # game executable.
+    add_executable(sm_pause_options_test
+        tests/sm_pause_options_test.c src/sm_pause_options.c src/sm_video.c
+        ${SNESRECOMP_ROOT}/runner/src/desktop/host_clock.c
+        ${SNESRECOMP_ROOT}/runner/src/snes_overlay_draw.c
+        ${RECOMP_UI_ROOT}/src/common/recomp_runtime_ui.c)
+    target_include_directories(sm_pause_options_test PRIVATE src ${RECOMP_UI_ROOT}/src
+        ${SNESRECOMP_RUNNER_INCLUDE_DIRS}
+        ${SNESRECOMP_ROOT}/runner/src/desktop)
+    file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/sm_pause_options_test.d)
+    add_test(NAME sm_pause_options COMMAND sm_pause_options_test
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/sm_pause_options_test.d)
+
     add_executable(sm_renderer_test tests/sm_renderer_test.c src/sm_renderer.c src/sm_mode7.c)
     target_include_directories(sm_renderer_test PRIVATE
         src ${SNESRECOMP_RUNNER_INCLUDE_DIRS})
@@ -132,7 +147,7 @@ if(BUILD_TESTING AND NOT ANDROID)
     # Assertions are the test oracle, including Release configurations.
     foreach(sm_test sm_display_test sm_overlay_blit_test
             sm_savestate_gesture_test ppu_window_test sm_video_test
-            sm_renderer_test sm_mode7_test)
+            sm_pause_options_test sm_renderer_test sm_mode7_test)
         if(MSVC)
             target_compile_options(${sm_test} PRIVATE /UNDEBUG)
         else()
@@ -141,6 +156,7 @@ if(BUILD_TESTING AND NOT ANDROID)
     endforeach()
     if(NOT WIN32)
         target_link_libraries(sm_video_test PRIVATE m)
+        target_link_libraries(sm_pause_options_test PRIVATE m)
         target_link_libraries(sm_renderer_test PRIVATE m)
         target_link_libraries(sm_render_capture PRIVATE m)
         target_link_libraries(sm_mode7_test PRIVATE m)

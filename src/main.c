@@ -60,7 +60,7 @@ extern const RtlGameInfo kSuperMetroidGameInfo;
 extern Snes *g_snes;
 extern uint8_t g_ram[0x20000];
 
-static const char *kSmVideoConfig = "sm-video.ini";
+static const char *kSmVideoConfig = SM_VIDEO_CONFIG_FILE;
 static SmViewport g_sm_viewport;
 static uint32_t g_sm_output[SM_MAX_WIDTH * SM_HEIGHT];
 
@@ -100,11 +100,9 @@ static void SmOnReset(void) {
 
 static void SmBeforeRunFrame(void) {
   if (SmCustomRendererEnabled()) SmRendererLatchObjectState(g_ram);
-  /* The Game Options tab is host state. Drop it as soon as the paused state
-   * ends so a later pause opens on the ROM's Map screen instead of resuming
-   * on a panel the guest has already left. */
-  if (g_ram[0x0998] != 0x0F)
-    SmPauseOptions_SetActive(false);
+  /* Drop the Options tab once the guest has left it, so a later pause opens
+   * on the ROM's Map screen instead of resuming on a stale panel. */
+  SmPauseOptions_SyncToGuest();
 }
 
 /* Door loading can take longer than a frame. Keep its debt only while the
@@ -137,23 +135,12 @@ static void SmEndSimFrame(const uint8_t *field, unsigned number) {
     SmRendererSaveCapture(capture_path);
 }
 
-/* The Game Options tab (3rd pause-menu tab) is drawn by the host, not by the
- * guest: it has no screen behind it, so it must be presented even when the
- * custom renderer is off. Gated on the paused state (game_state 0x0F, the
- * state whose HLE parks menu_index == SM_MENU_INDEX_OPTIONS) so a stale flag
- * can never composite the panel over gameplay. */
-static bool SmPauseOverlayActive(void) {
-  bool active = SmPauseOptions_IsActive() && g_ram[0x0998] == 0x0F;
-  if (SmPauseOptions_IsActive()) {
-    host_report_breadcrumb("SmPauseOverlayActive: SmPauseOptions_IsActive=%d, game_state=0x%02X, result=%d",
-            SmPauseOptions_IsActive(), g_ram[0x0998], active);
-  }
-  return active;
-}
-
 static int SmDrawFrame(uint8_t *dst, size_t pitch, const uint8_t *field,
                        int frame_w, int frame_h, double alpha) {
-  const bool overlay = SmPauseOverlayActive();
+  /* The Options pause tab is drawn by the host, not by the guest: it has no
+   * screen behind it, so it must be presented even when the custom renderer
+   * is off. */
+  const bool overlay = SmPauseOptions_Visible();
   if (!SmCustomRendererEnabled() && !overlay)
     return 0;
   int drew = 0;
