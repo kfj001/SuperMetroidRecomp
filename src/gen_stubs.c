@@ -556,12 +556,16 @@ static void HleSmPauseHostTick(uint16 pressed) {
   if (SmPauseOptions_IsActive()) {
     uint16 used = 0;
     if (pressed & kButton_R) {
+      /* Options -> Map (forward): run Equipment->Map fade sequence */
       SmPauseOptions_SetActive(false);
-      menu_index = 0;                          /* Options -> Map */
+      menu_index = 6;                          /* PauseMenu_5: fade out */
+      pausemenu_button_label_mode = 0;         /* destination = Map */
       used |= kButton_R;
     } else if (pressed & kButton_L) {
+      /* Options -> Equipment (backward): run Map->Equipment fade sequence */
       SmPauseOptions_SetActive(false);
-      menu_index = 1;                          /* Options -> Equipment */
+      menu_index = 3;                          /* PauseMenu_2: fade out */
+      pausemenu_button_label_mode = 2;         /* destination = Equipment */
       used |= kButton_L;
     } else {
       if (pressed & kButton_Up)    { SmPauseOptions_Move(-1);   used |= kButton_Up; }
@@ -571,7 +575,8 @@ static void HleSmPauseHostTick(uint16 pressed) {
       if (pressed & kButton_A)     { SmPauseOptions_Activate(); used |= kButton_A; }
       if (SmPauseOptions_ConsumeLeaveRequest() || (pressed & kButton_B)) {
         SmPauseOptions_SetActive(false);
-        menu_index = 0;                        /* Options -> Map */
+        menu_index = 6;                        /* Options -> Map via Equipment->Map transition */
+        pausemenu_button_label_mode = 0;
         used |= kButton_B;
       }
     }
