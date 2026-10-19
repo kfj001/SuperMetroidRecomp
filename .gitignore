@@ -92,7 +92,3 @@ android/local.properties
 /config.ini
 /input.ini
 /analysis/
-
-# Cache
-.cache/
-release-windows/
