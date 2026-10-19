@@ -46,6 +46,7 @@
 #include "sm_display.h"
 #include "sm_renderer.h"
 #include "sm_video.h"
+#include "sm_pause_options.h"
 #include "sm_spc_player.h"
 #if defined(RECOMP_LAUNCHER)
 #include "sm_mods.h"
@@ -99,6 +100,11 @@ static void SmOnReset(void) {
 
 static void SmBeforeRunFrame(void) {
   if (SmCustomRendererEnabled()) SmRendererLatchObjectState(g_ram);
+  /* The Game Options tab is host state. Drop it as soon as the paused state
+   * ends so a later pause opens on the ROM's Map screen instead of resuming
+   * on a panel the guest has already left. */
+  if (g_ram[0x0998] != 0x0F)
+    SmPauseOptions_SetActive(false);
 }
 
 /* Door loading can take longer than a frame. Keep its debt only while the
@@ -131,16 +137,36 @@ static void SmEndSimFrame(const uint8_t *field, unsigned number) {
     SmRendererSaveCapture(capture_path);
 }
 
+/* The Game Options tab (3rd pause-menu tab) is drawn by the host, not by the
+ * guest: it has no screen behind it, so it must be presented even when the
+ * custom renderer is off. Gated on the paused state (game_state 0x0F, the
+ * state whose HLE parks menu_index == SM_MENU_INDEX_OPTIONS) so a stale flag
+ * can never composite the panel over gameplay. */
+static bool SmPauseOverlayActive(void) {
+  bool active = SmPauseOptions_IsActive() && g_ram[0x0998] == 0x0F;
+  if (SmPauseOptions_IsActive()) {
+    host_report_breadcrumb("SmPauseOverlayActive: SmPauseOptions_IsActive=%d, game_state=0x%02X, result=%d",
+            SmPauseOptions_IsActive(), g_ram[0x0998], active);
+  }
+  return active;
+}
+
 static int SmDrawFrame(uint8_t *dst, size_t pitch, const uint8_t *field,
                        int frame_w, int frame_h, double alpha) {
-  if (!SmCustomRendererEnabled())
+  const bool overlay = SmPauseOverlayActive();
+  if (!SmCustomRendererEnabled() && !overlay)
     return 0;
-  if (!SmRendererDraw(g_sm_output, g_sm_viewport, g_sm_video.hud_anchored, alpha)) {
+  int drew = 0;
+  if (SmCustomRendererEnabled())
+    drew = SmRendererDraw(g_sm_output, g_sm_viewport, g_sm_video.hud_anchored, alpha);
+  if (!drew) {
     memset(g_sm_output, 0, sizeof(g_sm_output));
     for (int y = 0; y < SM_HEIGHT; ++y)
       memcpy(g_sm_output + y * frame_w + g_sm_viewport.extra,
              field + y * 256 * 4, 256 * 4);
   }
+  if (overlay)
+    SmPauseOptions_Render(g_sm_output, frame_w, frame_w, frame_h);
   RtlWidescreenPresent(dst, pitch, (const uint8_t *)g_sm_output, frame_w, frame_h);
   return 1;
 }

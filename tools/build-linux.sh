@@ -32,6 +32,7 @@
 #   bash tools/build-linux.sh --version 0.10.0 # stamp + name a release build
 #   bash tools/build-linux.sh --config debug   # debug build (TCP server + rings)
 #   bash tools/build-linux.sh --regen          # regen src/gen first (tools/regen.sh)
+#   bash tools/build-linux.sh --auto-regen     # regen only if recomp config changed
 #   bash tools/build-linux.sh --run            # launch the AppImage after building
 #   bash tools/build-linux.sh --no-package     # configure + build only, skip AppImage
 #   bash tools/build-linux.sh --out DIR        # where to drop the .AppImage
@@ -90,6 +91,7 @@ while [ $# -gt 0 ]; do
     --debug) CONFIG="debug"; shift;;
     --version) VERSION="$2"; shift 2;;
     --regen) DO_REGEN=1; shift;;
+    --auto-regen) DO_AUTO_REGEN=1; shift;;
     --run) DO_RUN=1; shift;;
     --no-package) DO_PACKAGE=0; shift;;
     --out) OUT="$2"; shift 2;;
@@ -117,6 +119,8 @@ SDL_CFG_DIR="$( { find /usr/lib /usr/lib64 /usr/local/lib -type d -path "*cmake/
 FLAGS+=( -DSNESRECOMP_SDL_BACKEND="$SDL_BACKEND" )
 [ -n "$SDL_CFG_DIR" ] && FLAGS+=( "-D${SDL_BACKEND}_DIR=$SDL_CFG_DIR" )
 
+DO_AUTO_REGEN=0
+
 # Single cleanup hook: remove the AppDir scratch dir and restore generated files.
 WORK=""; RAN_PREBUILD=0
 cleanup() {
@@ -140,9 +144,50 @@ cd "$REPO"
   exit 1
 }
 
+# --- Smart regeneration check -----------------------------------------------
+# If any recomp/*.cfg is newer than the oldest generated bank file, the
+# generated code is stale. We can auto-regen (--auto-regen) or at least
+# warn loudly so incremental builds don't silently use old code.
+# Note: recomp/funcs.h is an OUTPUT of regen, not an input, so we don't
+# check its timestamp (it updates every regen run even if banks are reused).
+GEN_DIR="$REPO/src/gen"
+CFG_DIR="$REPO/recomp"
+NEEDS_REGEN=0
+if [ -d "$GEN_DIR" ] && [ -d "$CFG_DIR" ]; then
+  # Find oldest generated bank file (skip cache/manifest)
+  OLDEST_GEN=$(find "$GEN_DIR" -maxdepth 1 -type f \( -name "bank*_v2.c" -o -name "dispatch_v2.c" \) -printf "%T@ %p\n" 2>/dev/null | sort -n | head -1 | cut -d' ' -f2-)
+  if [ -n "$OLDEST_GEN" ] && [ -f "$OLDEST_GEN" ]; then
+    # Check if any .cfg file is newer than that oldest gen file
+    NEWER_CFG=$(find "$CFG_DIR" -maxdepth 1 -type f -name "*.cfg" -newer "$OLDEST_GEN" 2>/dev/null | head -1)
+    if [ -n "$NEWER_CFG" ]; then
+      NEEDS_REGEN=1
+      echo "⚠️  Generated code appears stale: $NEWER_CFG is newer than $OLDEST_GEN"
+    fi
+  fi
+fi
+
+# Auto-regenerate if requested, or if --regen was passed, or if stale and --auto-regen
+REGEN_RAN=0
 if [ "$DO_REGEN" = "1" ] && [ -n "$REGEN_CMD" ]; then
-  echo "[regen] $REGEN_CMD"
+  echo "[regen] $REGEN_CMD (explicit --regen)"
   eval "$REGEN_CMD"
+  REGEN_RAN=1
+elif [ "$DO_AUTO_REGEN" = "1" ] && [ "$NEEDS_REGEN" = "1" ] && [ -n "$REGEN_CMD" ]; then
+  echo "[regen] $REGEN_CMD (auto-detected stale generated code)"
+  eval "$REGEN_CMD"
+  REGEN_RAN=1
+elif [ "$NEEDS_REGEN" = "1" ]; then
+  echo "ERROR: Generated code is out of date with recomp config." >&2
+  echo "       Run with --regen to regenerate, or --auto-regen to do it automatically." >&2
+  echo "       (This happens when you edit recomp/*.cfg files or need new HLE functions.)" >&2
+  exit 1
+fi
+
+# If regeneration ran, touch the generated bank files so their timestamps
+# reflect the regeneration time. This prevents false "stale" warnings on
+# subsequent builds when v2_emit reuses existing output (no content change).
+if [ "$REGEN_RAN" = "1" ]; then
+  find "$GEN_DIR" -maxdepth 1 -type f \( -name "bank*_v2.c" -o -name "dispatch_v2.c" \) -exec touch {} + 2>/dev/null || true
 fi
 
 if [ -n "$PREBUILD_CMD" ]; then

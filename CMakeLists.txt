@@ -180,6 +180,7 @@ set(SM_HOST_SOURCES
     src/sm_mode7.c        # SM's mode-7 object projection
     src/sm_display.c      # SM presentation geometry
     src/sm_video.c        # SM aspect/HUD policy + presentation clock
+    src/sm_pause_options.c # 3rd pause tab: the Game Options overlay
     src/sm_mods.c         # built-in presentation mod provider
 )
 
