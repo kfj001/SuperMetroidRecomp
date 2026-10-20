@@ -16,7 +16,10 @@
  *     live display settings: fullscreen, vsync, frame blending, run-ahead
  *     and window scale. Those apply to the running window immediately, and
  *     the host writes config.ini at shutdown so they survive the restart
- *     and the launcher opens on what the player left.
+ *     and the launcher opens on what the player left. An Exit row asks the
+ *     host to end the run gracefully (snesrecomp_request_exit): the host
+ *     writes any config the panel dirtied and shuts down on its next loop
+ *     pass, after the requesting frame has presented.
  *   - This module draws that model in the pause screen's style with the
  *     framework's 8x8-font overlay primitives (snes_overlay_draw.h).
  *   - SmPauseOptions_GuestTick() is the only guest-facing part. It runs at

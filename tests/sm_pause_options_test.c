@@ -1,10 +1,10 @@
 /* The pause menu's Options tab (src/sm_pause_options.c): what one paused
  * frame does to the guest's pause state and pad, and the panel's pixels.
  *
- * The render hashes are a golden picture of the open panel at its ten-row
- * layout (five SM video settings, five framework display settings, and
- * Back) with the navigation the test has driven. A change to them is a
- * visible change to the panel.
+ * The render hashes are a golden picture of the open panel at its eleven-row
+ * layout (five SM video settings, five framework display settings, a
+ * graceful Exit, and Back) with the navigation the test has driven. A
+ * change to them is a visible change to the panel.
  *
  * The framework's live-settings API (host_api.h) is faked here: the fakes
  * apply the same clamps the host's setters do and mark g_config_dirty, as
@@ -28,6 +28,7 @@ uint8 g_ram[0x20000];
  * host_main.c); the defaults match the shipped config.ini: vsync on, window
  * scale 3, everything else off. */
 bool g_config_dirty;
+bool f_exit_requested;
 int f_fullscreen;        /* 0 = windowed, 1 = borderless */
 int f_vsync = 1;         /* 0 = off, 1 = on, 2 = adaptive */
 int f_frame_blend;
@@ -70,6 +71,10 @@ void snesrecomp_set_window_scale(int scale) {
   g_config_dirty = true;
 }
 int snesrecomp_get_window_scale(void) { return f_window_scale; }
+
+/* The host ends the run after the requesting frame; the fake only latches,
+ * so the test can keep driving the model afterwards. */
+void snesrecomp_request_exit(void) { f_exit_requested = true; }
 
 static uint32_t g_frame[684 * 224];
 
@@ -132,27 +137,27 @@ int main(void) {
   assert(joypad1_lastkeys == 0);
   /* Opened on Widescreen at the defaults: sm-video defaults, and the faked
    * framework defaults (windowed, vsync on, no blend, no run-ahead, scale 3). */
-  HashCheck(256, 0x3EA197F1u);
-  HashCheck(342, 0x516424A1u);
-  HashCheck(456, 0xCD5B4611u);
-  HashCheck(684, 0xDDF7C301u);
+  HashCheck(256, 0x3606AAC9u);
+  HashCheck(342, 0x99C47AB9u);
+  HashCheck(456, 0x34570E29u);
+  HashCheck(684, 0xAEA431B9u);
 
   /* HUD anchoring is disabled without widescreen, so Down skips it. */
   Frame(kButton_Down, 0);   /* Presentation FPS */
-  HashCheck(256, 0x3B68D1ADu);
-  HashCheck(342, 0xAA9CFA75u);
+  HashCheck(256, 0x92F73515u);
+  HashCheck(342, 0xF578B28Du);
   Frame(kButton_Down, 0);   /* Aspect ratio */
   Frame(kButton_Right, 0);  /* Fit wraps to 4:3 */
   assert(g_sm_video.aspect == SM_ASPECT_STOCK);
-  HashCheck(256, 0x8EC4C401u);
-  HashCheck(684, 0x2DC0A171u);
+  HashCheck(256, 0xB71F48D9u);
+  HashCheck(684, 0x618DF429u);
   Frame(kButton_Right, 0);
   Frame(kButton_Left, 0);
   assert(g_sm_video.aspect == SM_ASPECT_STOCK);
   Frame(kButton_A, 0);      /* accept steps a choice forward */
   assert(g_sm_video.aspect == SM_ASPECT_16_9);
-  HashCheck(256, 0x2CE31F07u);
-  HashCheck(342, 0xF9B7FF9Fu);
+  HashCheck(256, 0x039665DFu);
+  HashCheck(342, 0x4DA19B87u);
 
   /* Turning widescreen on brings HUD anchoring up, from either direction. */
   Frame(kButton_Up, 0);     /* Presentation FPS */
@@ -160,8 +165,8 @@ int main(void) {
   Frame(kButton_Left, 0);
   assert(g_sm_video.enhanced && g_sm_video.hud_anchored);
   Frame(kButton_Down, 0);   /* HUD anchoring, now reachable */
-  HashCheck(256, 0xC9C9E357u);
-  HashCheck(342, 0xA76917A7u);
+  HashCheck(256, 0xC882F42Fu);
+  HashCheck(342, 0xB09568FFu);
   Frame(kButton_A, 0);
   assert(!g_sm_video.hud_anchored && g_sm_video.enhanced);
 
@@ -169,11 +174,11 @@ int main(void) {
   Frame(kButton_Down, 0);   /* Presentation FPS */
   Frame(kButton_Down, 0);   /* Aspect ratio */
   Frame(kButton_Down, 0);   /* Fullscreen */
-  HashCheck(256, 0x485B4569u);
-  HashCheck(684, 0x32ED58A9u);
+  HashCheck(256, 0xB9730931u);
+  HashCheck(684, 0x73DAB5B1u);
   Frame(kButton_Right, 0);  /* Borderless */
   assert(f_fullscreen == 1 && g_config_dirty);
-  HashCheck(256, 0xC8654CEEu);
+  HashCheck(256, 0x86C66586u);
 
   /* VSync is a three-way choice that wraps at both ends. */
   Frame(kButton_Down, 0);   /* VSync */
@@ -183,7 +188,7 @@ int main(void) {
   assert(f_vsync == 0);                     /* Off */
   Frame(kButton_Right, 0);
   assert(f_vsync == 1);                     /* back to On */
-  HashCheck(256, 0x5A1F19ECu);
+  HashCheck(256, 0x82D35CFCu);
 
   /* Frame blend toggles on a fresh press, either direction. */
   Frame(kButton_Down, 0);   /* Frame blend */
@@ -191,7 +196,7 @@ int main(void) {
   assert(f_frame_blend == 1 && g_config_dirty);
   Frame(kButton_A, 0);
   assert(f_frame_blend == 0);
-  HashCheck(256, 0x367E2B26u);
+  HashCheck(256, 0x5EA3F98Eu);
 
   /* Run ahead counts 0..4 and stops at the ends. */
   Frame(kButton_Down, 0);   /* Run ahead */
@@ -202,7 +207,7 @@ int main(void) {
   assert(f_run_ahead == 4);
   Frame(kButton_Right, 0);
   assert(f_run_ahead == 4);
-  HashCheck(256, 0x77CD0048u);
+  HashCheck(256, 0x6F38AA28u);
   Frame(kButton_Left, 0);
   assert(f_run_ahead == 3);
   Frame(kButton_Left, 0);
@@ -213,18 +218,26 @@ int main(void) {
   Frame(kButton_Left, 0);
   assert(f_run_ahead == 0);
 
-  /* Still borderless, so Window scale is disabled: navigation skips it in
-   * both directions. */
-  Frame(kButton_Down, 0);   /* Run ahead -> Back */
-  HashCheck(256, 0x99BFD7C0u);
-  HashCheck(684, 0xF40515C0u);
+  /* Still borderless, so Window scale is disabled: navigation skips it and
+   * lands on Exit. */
+  Frame(kButton_Down, 0);   /* Run ahead -> Exit */
+  HashCheck(256, 0x3DC36EF0u);
+  HashCheck(684, 0xB88DA2B0u);
+  Frame(kButton_A, 0);      /* graceful exit */
+  assert(f_exit_requested);
+  HashCheck(256, 0x3DC36EF0u);       /* the action changes nothing visible */
+
+  /* Down to Back, up again to Fullscreen (over the disabled scale row). */
+  Frame(kButton_Down, 0);   /* Back to map */
+  HashCheck(256, 0x6C05F9C4u);
+  Frame(kButton_Up, 0);
   Frame(kButton_Up, 0);
   Frame(kButton_Up, 0);
   Frame(kButton_Up, 0);
   Frame(kButton_Up, 0);     /* Fullscreen */
   Frame(kButton_Left, 0);   /* Windowed */
   assert(f_fullscreen == 0 && g_config_dirty);
-  HashCheck(256, 0x485B4569u);
+  HashCheck(256, 0xB9730931u);
 
   /* Window scale, enabled again, counts 1..10. */
   Frame(kButton_Down, 0);   /* VSync */
@@ -236,11 +249,12 @@ int main(void) {
   assert(f_window_scale == 5);
   Frame(kButton_Left, 0);
   assert(f_window_scale == 4);
-  HashCheck(256, 0xF83921CCu);
-  HashCheck(684, 0x8CF4AD2Cu);
+  HashCheck(256, 0xD674AAF4u);
+  HashCheck(684, 0xCBC3DBF4u);
 
   /* Back: the ROM's Equipment->Map fade-out. The panel stays up,
    * dimmed with the screen, takes no input, and closes at the Load. */
+  Frame(kButton_Down, 0);   /* Exit */
   Frame(kButton_Down, 0);   /* Back to map */
   const uint32_t before_leaving = RenderHash(256);
   Frame(kButton_A, 0);
@@ -311,9 +325,9 @@ int main(void) {
   g_sm_video.enhanced = false; g_sm_video.hud_anchored = false;
   g_sm_video.fps_enabled = false; g_sm_video.aspect = SM_ASPECT_FIT;
   f_fullscreen = 0; f_vsync = 1; f_frame_blend = 0; f_run_ahead = 0;
-  f_window_scale = 3; g_config_dirty = false;
+  f_window_scale = 3; f_exit_requested = false; g_config_dirty = false;
   /* The opening picture again. */
-  HashCheck(256, 0x3EA197F1u);
+  HashCheck(256, 0x3606AAC9u);
 
   puts("sm_pause_options: ok");
   return 0;

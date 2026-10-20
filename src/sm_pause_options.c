@@ -70,6 +70,11 @@ static const RecompRuntimeUiItem kItems[] = {
     RECOMP_RUNTIME_UI_INT, 0, SNES_RUNAHEAD_MAX, 1, NULL, 0, NULL },
   { "window_scale", kSection, "Window scale", NULL,
     RECOMP_RUNTIME_UI_INT, 1, 10 /* the host's kMaxWindowScale */, 1, NULL, 0, NULL },
+  /* Graceful exit: the host ends the run on its next loop pass, through its
+   * normal shutdown path, so any config the panel dirtied is written to
+   * config.ini first. */
+  { "exit", kSection, "Exit", NULL,
+    RECOMP_RUNTIME_UI_ACTION, 0, 0, 0, NULL, 0, NULL },
   { "back", kSection, "Back to map", NULL,
     RECOMP_RUNTIME_UI_ACTION, 0, 0, 0, NULL, 0, NULL },
 };
@@ -125,9 +130,17 @@ static int SetValue(void *ctx, const RecompRuntimeUiItem *item, int value) {
 
 static int RunAction(void *ctx, const RecompRuntimeUiItem *item) {
   (void)ctx;
-  if (strcmp(item->key, "back")) return 0;
-  g_leave = true;
-  return 1;
+  if (!strcmp(item->key, "back")) {
+    g_leave = true;
+    return 1;
+  }
+  /* The host ends the run on its next loop pass -- after this frame has
+   * presented -- through its normal shutdown path. */
+  if (!strcmp(item->key, "exit")) {
+    snesrecomp_request_exit();
+    return 1;
+  }
+  return 0;
 }
 
 static int IsEnabled(void *ctx, const RecompRuntimeUiItem *item) {
@@ -349,13 +362,13 @@ static void DrawPanel(uint32_t *dst, int stride, int width, int height) {
   snes_ovl_fill_rect(dst, stride, height, 10, 42, width - 20, 1, COL_BORDER);
 
   /* Rows, as the model reports them. The 8x8 font is upper-case only, so
-   * "On" and "Fit" draw as ON and FIT. Ten rows at 15px pitch from y=50
-   * reach 185, leaving room for the hint before the frame's bottom edge. */
+   * "On" and "Fit" draw as ON and FIT. Eleven rows at 13px pitch from y=50
+   * reach 180, leaving room for the hint before the frame's bottom edge. */
   {
     const size_t count = recomp_runtime_ui_view_row_count(g_ui);
     const size_t selected = recomp_runtime_ui_view_selected_row(g_ui);
     int row_y = 50;
-    const int row_h = 15;
+    const int row_h = 13;
     for (size_t i = 0; i < count; ++i, row_y += row_h) {
       RecompRuntimeUiRowView row;
       if (!recomp_runtime_ui_view_row(g_ui, i, &row) || !row.item) continue;
