@@ -10,9 +10,13 @@
  * So the third tab is a host panel:
  *
  *   - The rows are a recomp-ui runtime-UI model (recomp_runtime_ui.h): it
- *     owns navigation, disabled rows and persistence. They edit g_sm_video,
- *     the same settings the launcher's Mods page edits, saved to
- *     SM_VIDEO_CONFIG_FILE.
+ *     owns navigation, disabled rows and persistence. They edit g_sm_video
+ *     (the same settings the launcher's Mods page edits, saved to
+ *     SM_VIDEO_CONFIG_FILE) and, through host_api.h, the framework's own
+ *     live display settings: fullscreen, vsync, frame blending, run-ahead
+ *     and window scale. Those apply to the running window immediately, and
+ *     the host writes config.ini at shutdown so they survive the restart
+ *     and the launcher opens on what the player left.
  *   - This module draws that model in the pause screen's style with the
  *     framework's 8x8-font overlay primitives (snes_overlay_draw.h).
  *   - SmPauseOptions_GuestTick() is the only guest-facing part. It runs at

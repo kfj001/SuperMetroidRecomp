@@ -127,6 +127,10 @@ if(BUILD_TESTING AND NOT ANDROID)
     target_include_directories(sm_pause_options_test PRIVATE src ${RECOMP_UI_ROOT}/src
         ${SNESRECOMP_RUNNER_INCLUDE_DIRS}
         ${SNESRECOMP_ROOT}/runner/src/desktop)
+    # sm_pause_options.c includes host_api.h, which includes the SDL boundary
+    # header; the test fakes the API so no SDL runs, but the includes and
+    # compile definitions still need the selected backend.
+    snesrecomp_target_sdl(sm_pause_options_test)
     file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/sm_pause_options_test.d)
     add_test(NAME sm_pause_options COMMAND sm_pause_options_test
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/sm_pause_options_test.d)

@@ -7,8 +7,10 @@
 #include <string.h>
 
 #include "common_rtl.h"
+#include "host_api.h"
 #include "recomp_runtime_ui.h"
 #include "snes_overlay_draw.h"
+#include "snes_runahead.h"
 #include "sm_video.h"
 #include "variables.h"
 
@@ -36,6 +38,10 @@ static uint8 Inidisp(void) { return g_ram[0x0051]; }  /* reg_INIDISP shadow */
 
 static const char kSection[] = "Options";
 static const char *g_aspect_choices[SM_ASPECT_COUNT];
+/* The framework's choices are fixed vocabulary; the SM aspect names come from
+ * sm_video at panel creation. */
+static const char *g_fullscreen_choices[2] = { "Windowed", "Borderless" };
+static const char *g_vsync_choices[3] = { "Off", "On", "Adaptive" };
 
 static const RecompRuntimeUiItem kItems[] = {
   { "widescreen", kSection, "Widescreen", NULL,
@@ -48,6 +54,22 @@ static const RecompRuntimeUiItem kItems[] = {
   { "aspect", kSection, "Aspect ratio", NULL,
     RECOMP_RUNTIME_UI_CHOICE, 0, SM_ASPECT_COUNT - 1, 1,
     g_aspect_choices, SM_ASPECT_COUNT, NULL },
+  /* The framework's own display settings (host_api.h, snesrecomp PR #186).
+   * Each change applies live to the running window; the host marks its
+   * config dirty and writes config.ini at shutdown, so it survives the
+   * restart. */
+  { "fullscreen", kSection, "Fullscreen", NULL,
+    RECOMP_RUNTIME_UI_CHOICE, 0, 1, 1,
+    g_fullscreen_choices, 2, NULL },
+  { "vsync", kSection, "VSync", NULL,
+    RECOMP_RUNTIME_UI_CHOICE, 0, 2, 1,
+    g_vsync_choices, 3, NULL },
+  { "frame_blend", kSection, "Frame blend", NULL,
+    RECOMP_RUNTIME_UI_BOOL, 0, 1, 1, NULL, 0, NULL },
+  { "run_ahead", kSection, "Run ahead", NULL,
+    RECOMP_RUNTIME_UI_INT, 0, SNES_RUNAHEAD_MAX, 1, NULL, 0, NULL },
+  { "window_scale", kSection, "Window scale", NULL,
+    RECOMP_RUNTIME_UI_INT, 1, 10 /* the host's kMaxWindowScale */, 1, NULL, 0, NULL },
   { "back", kSection, "Back to map", NULL,
     RECOMP_RUNTIME_UI_ACTION, 0, 0, 0, NULL, 0, NULL },
 };
@@ -67,6 +89,11 @@ static int GetValue(void *ctx, const RecompRuntimeUiItem *item, int *out) {
   bool *b = BoolField(item);
   if (b) { *out = *b; return 1; }
   if (!strcmp(item->key, "aspect")) { *out = (int)g_sm_video.aspect; return 1; }
+  if (!strcmp(item->key, "fullscreen")) { *out = snesrecomp_get_fullscreen(); return 1; }
+  if (!strcmp(item->key, "vsync")) { *out = snesrecomp_get_vsync(); return 1; }
+  if (!strcmp(item->key, "frame_blend")) { *out = snesrecomp_get_frame_blend(); return 1; }
+  if (!strcmp(item->key, "run_ahead")) { *out = snesrecomp_get_run_ahead(); return 1; }
+  if (!strcmp(item->key, "window_scale")) { *out = snesrecomp_get_window_scale(); return 1; }
   return 0;
 }
 
@@ -85,6 +112,14 @@ static int SetValue(void *ctx, const RecompRuntimeUiItem *item, int value) {
     g_sm_video.aspect = (SmAspect)value;
     return 1;
   }
+  /* The host's setters clamp, apply the change to the running window, and
+   * mark its config dirty for the shutdown write; the model only proposes
+   * values inside each row's range, so all of them are accepted. */
+  if (!strcmp(item->key, "fullscreen")) { snesrecomp_set_fullscreen(value); return 1; }
+  if (!strcmp(item->key, "vsync")) { snesrecomp_set_vsync(value); return 1; }
+  if (!strcmp(item->key, "frame_blend")) { snesrecomp_set_frame_blend(value); return 1; }
+  if (!strcmp(item->key, "run_ahead")) { snesrecomp_set_run_ahead(value); return 1; }
+  if (!strcmp(item->key, "window_scale")) { snesrecomp_set_window_scale(value); return 1; }
   return 0;
 }
 
@@ -97,7 +132,10 @@ static int RunAction(void *ctx, const RecompRuntimeUiItem *item) {
 
 static int IsEnabled(void *ctx, const RecompRuntimeUiItem *item) {
   (void)ctx;
-  return strcmp(item->key, "hud") ? 1 : g_sm_video.enhanced;
+  if (!strcmp(item->key, "hud")) return g_sm_video.enhanced;
+  /* The host ignores a scale change while fullscreen, so the row is too. */
+  if (!strcmp(item->key, "window_scale")) return !snesrecomp_get_fullscreen();
+  return 1;
 }
 
 static void Save(void *ctx) {
@@ -298,7 +336,7 @@ static void DrawPanel(uint32_t *dst, int stride, int width, int height) {
 
   /* Tab strip: MAP / EQUIP / OPTIONS, with the current tab lit. */
   {
-    int y = 12;
+    int y = 10;
     snes_ovl_draw_text(dst, stride, height, 18, y, "MAP", COL_DIM, 1);
     snes_ovl_draw_text(dst, stride, height, 18 + 4 * 8, y, "EQUIP", COL_DIM, 1);
     int ox = 18 + (4 + 6) * 8;
@@ -306,17 +344,18 @@ static void DrawPanel(uint32_t *dst, int stride, int width, int height) {
     snes_ovl_draw_text(dst, stride, height, ox, y, "OPTIONS", COL_TABON, 1);
   }
 
-  snes_ovl_fill_rect(dst, stride, height, 10, 32, width - 20, 1, COL_BORDER);
-  DrawCentered(dst, stride, height, width, 40, "GAME OPTIONS", COL_TITLE, 1);
-  snes_ovl_fill_rect(dst, stride, height, 10, 54, width - 20, 1, COL_BORDER);
+  snes_ovl_fill_rect(dst, stride, height, 10, 24, width - 20, 1, COL_BORDER);
+  DrawCentered(dst, stride, height, width, 30, "GAME OPTIONS", COL_TITLE, 1);
+  snes_ovl_fill_rect(dst, stride, height, 10, 42, width - 20, 1, COL_BORDER);
 
   /* Rows, as the model reports them. The 8x8 font is upper-case only, so
-   * "On" and "Fit" draw as ON and FIT. */
+   * "On" and "Fit" draw as ON and FIT. Ten rows at 15px pitch from y=50
+   * reach 185, leaving room for the hint before the frame's bottom edge. */
   {
     const size_t count = recomp_runtime_ui_view_row_count(g_ui);
     const size_t selected = recomp_runtime_ui_view_selected_row(g_ui);
-    int row_y = 66;
-    const int row_h = 20;
+    int row_y = 50;
+    const int row_h = 15;
     for (size_t i = 0; i < count; ++i, row_y += row_h) {
       RecompRuntimeUiRowView row;
       if (!recomp_runtime_ui_view_row(g_ui, i, &row) || !row.item) continue;
@@ -326,8 +365,8 @@ static void DrawPanel(uint32_t *dst, int stride, int width, int height) {
       uint32_t label_col = sel ? COL_SEL : (row.enabled ? COL_TEXT : COL_DIM);
       uint32_t value_col = sel ? COL_ACCENT : (row.enabled ? COL_TEXT : COL_DIM);
       if (sel)
-        snes_ovl_fill_rect(dst, stride, height, 14 + indent, row_y - 4,
-                           width - 28 - indent, 15, COL_SELBG);
+        snes_ovl_fill_rect(dst, stride, height, 14 + indent, row_y - 2,
+                           width - 28 - indent, 13, COL_SELBG);
       snes_ovl_draw_text(dst, stride, height, 22 + indent, row_y,
                          row.label, label_col, 1);
       if (row.item->type != RECOMP_RUNTIME_UI_ACTION && row.value[0])
@@ -339,7 +378,7 @@ static void DrawPanel(uint32_t *dst, int stride, int width, int height) {
 
   /* Hint row. */
   {
-    int y = height - 30;
+    int y = height - 20;
     snes_ovl_fill_rect(dst, stride, height, 10, y - 6, width - 20, 1, COL_BORDER);
     snes_ovl_draw_text(dst, stride, height, 14, y, "A SELECT", COL_ACCENT, 1);
     snes_ovl_draw_text(dst, stride, height, 14 + 10 * 8, y, "B BACK", COL_ACCENT, 1);
