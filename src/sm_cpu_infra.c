@@ -1,6 +1,17 @@
 #include "common_cpu_infra.h"
 #include "sm_rtl.h"
 #include "sm_post_mortem.h"
+#include "sm_replay.h"
+#include "sm_video.h"
+#include "sm_renderer.h"
+
+static bool SmFrameBegin(uint32_t *inputs) {
+  if (!SmReplayBegin(inputs)) return false;
+  /* Playback may restore a checkpoint and change presentation at this exact
+   * boundary, so latch objects after those changes. */
+  if (g_sm_video.enhanced || g_sm_video.fps_enabled) SmRendererLatchObjectState(g_ram);
+  return true;
+}
 
 /* Called by the framework from SnesInit, once the machine exists. */
 static void SmInitialize(void) {
@@ -18,6 +29,8 @@ const RtlGameInfo kSuperMetroidGameInfo = {
   .title = "sm",
   .initialize = &SmInitialize,
   .run_frame = &RunOneFrameOfGame,
+  .frame_begin = &SmFrameBegin,
+  .frame_end = &SmReplayEnd,
   .draw_ppu_frame = &SmDrawPpuFrame,
   .save_name_prefix = "save",
   .state_save_extra = &SmStateSaveExtra,

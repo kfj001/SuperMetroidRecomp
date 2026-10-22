@@ -105,6 +105,9 @@ jobs:
         run: bash snesrecomp/tools/ci/prefetch_sdl3.sh --out-dir .cache/sdl3-src
       - name: Compile and test the complete native game
         env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          TMPDIR: ${{ runner.temp }}
           RELEASE_VERSION: ${{ inputs.version }}
           SDL_AUDIODRIVER: dummy
           SDL_AUDIO_DRIVER: dummy

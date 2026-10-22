@@ -1004,3 +1004,56 @@ Tracking: **beads-8wg.6.11**, **beads-8wg.2.126**.
 ## Owner-gated (do NOT do without explicit decision)
 Merging `investigate/sm-0012-blocker` or the multi-tier branches to main;
 releasing any game; reconciling the multi-tier branches; editing `src/gen/`.
+# 2026-10-22: automatic diagnostic sessions and gameplay replay
+
+Super Metroid now uses snesrecomp's bounded background replay writer (the
+already-landed engine PR #175, pin a6be975) and the existing simulation-frame
+callbacks. `sm_startup.c` adapts MMX's session log setup; `sm_replay.c` adapts its
+rolling checkpoint/input recorder for SM's pointer-free LLE continuation and
+built-in presentation settings. Normal play records by default, including
+upgrades; `SM_REPLAY_RECORD=0` opts out. HLE fibers and run-ahead explicitly
+suspend capture rather than producing an unusable replay.
+
+The format records every input, settings, actual post-query viewport dimensions,
+and WRAM/CPU/APU-RAM/VRAM checks. The viewport record is written after the raster
+and read ahead during replay, so the first frame and window-resize boundaries
+use their actual captured Fit width. Both a missing guest result and a missing
+raster result remain incomplete: replay executes the interrupted phase and
+cannot report success if it returns. Build/target and ROM identity are checked
+before restoring or executing a checkpoint. Playback uses separate SRAM roots.
+
+Validation commands: `ctest --test-dir <build> --output-on-failure` (12 tests,
+including the shared blocked-writer/I/O-failure regressions), and
+`python tests/test_diagnostic_replay.py --exe <game> --rom <owned JU ROM>
+--fixture <gameplay.sav> --work-dir <new directory>`. ROM-backed coverage includes
+independent segment replay, Phantoon-room movement/jump/shoot inputs, equality
+with recording disabled, save/load discontinuities, bounded checkpoint eviction,
+default session logging, wrong build/ROM, damaged and malformed checkpoints,
+interrupted guest/raster records and explicit divergence evidence. Checkpoints
+used to position the scene are QA setup, not evidence of a boss victory.
+
+The progression harness needs a trace-enabled build: production intentionally
+compiles out the TCP debug server. Its `--resume-state` argument consumes its
+input as a relaunch artifact; the acceptance harness now always gives it a
+disposable copy, preserving the original fixture.
+
+### Phantoon first eye attack (2026-10-22)
+
+The player's v0.3.12 Steam Deck report was a launcher-only exit at frame 0,
+but the described freeze reproduces from a living Phantoon room checkpoint.
+At frame 12060 the AOT path reaches a balanced pushed long call in
+ProcessEnemyInstructions ($A0:C292). It resolves $A7:808A but the shared
+cpu_dispatch_call_pc_pushed helper left PB=$A0. The handler's unresolved
+JMP ($0012) consequently interprets $A0:CF5E instead of $A7:CF5E, vectors
+through BRK, and parks in $80:8573. Gameplay WRAM becomes byte-identical
+across thousands of host frames while audio continues.
+
+Engine PR #206 scopes the requested PB around the compiled long callee,
+restoring the caller while propagating returns/yields. The runtime regression
+checks requested ROM mirror banks, long/near calls and yield propagation.
+Corrected AOT and interpreter control reach the natural eye-open ($D60D)
+and fireball-rain ($D788) phases. The acceptance harness now offers
+`--phantoon-fixture <living pre-intro checkpoint>` to observe those transitions,
+check that gameplay continues, and replay the entire recorded attack.
+The checkpoint bypasses room traversal; no AI phase, damage or success flags
+are injected. This check does not establish boss victory.

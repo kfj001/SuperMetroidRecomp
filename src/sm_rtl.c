@@ -1,6 +1,7 @@
 #include "sm_rtl.h"
 #include "sm_renderer.h"
 #include "sm_spc_player.h"
+#include "sm_replay.h"
 #include "variables.h"
 #include "common_cpu_infra.h"
 #include "snes/snes.h"
@@ -135,8 +136,10 @@ void SmStateSaveExtra(struct SaveLoadInfo *sli) {
   RtlSaveExecutionState(sli);
   if (header[6]) {
     void *spc = malloc(header[6]);
-    if (!spc) abort();
-    if (SmSpcPlayer_SaveState(spc, header[6]) != header[6]) abort();
+    if (!spc) { RtlStateStreamFail(sli); return; }
+    if (SmSpcPlayer_SaveState(spc, header[6]) != header[6]) {
+      free(spc); RtlStateStreamFail(sli); return;
+    }
     sli->func(sli, spc, header[6]);
     free(spc);
   }
@@ -150,24 +153,27 @@ void SmStateLoadExtra(struct SaveLoadInfo *sli, uint32_t version) {
   if (h[0] != SM_FILE_STATE_MAGIC || h[1] != 1 || h[2] > 0xFFFFFFu ||
       h[3] > 1 || h[4] > 1 || (h[6] && h[6] != SmSpcPlayer_StateSize())) {
     fprintf(stderr, "[sm_state] unrecognized execution-state extension\n");
+    RtlStateStreamFail(sli);
     return;
   }
   if (!RtlLoadExecutionState(sli)) {
     fprintf(stderr, "[sm_state] execution residue does not match this runtime\n");
+    RtlStateStreamFail(sli);
     return;
   }
   if (h[6]) {
     void *spc = malloc(h[6]);
-    if (!spc) abort();
+    if (!spc) { RtlStateStreamFail(sli); return; }
     sli->func(sli, spc, h[6]);
     int ok = SmSpcPlayer_LoadState(spc, h[6]);
     free(spc);
-    if (!ok) return;
+    if (!ok) { RtlStateStreamFail(sli); return; }
   }
   g_loaded_file_state_valid = true;
 }
 
 void SmOnStateLoaded(uint32_t version) {
+  SmReplayStateLoaded();
   SmRendererReset();
   if (!g_loaded_file_state_valid || g_game_fiber ||
       sm_execution_mode() != SNESRECOMP_EXECUTION_MODE_LLE) {
