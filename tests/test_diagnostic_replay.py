@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import struct
 import sys
 import time
 
@@ -46,6 +47,7 @@ def main():
     parser.add_argument("--rom", type=Path, required=True)
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--fixture", type=Path)
+    parser.add_argument("--phantoon-fixture", type=Path, help="living Phantoon room checkpoint before the intro")
     args = parser.parse_args()
     exe, rom, work = args.exe.resolve(strict=True), args.rom.resolve(strict=True), args.work_dir.resolve()
     work.mkdir(parents=True, exist_ok=False)
@@ -73,11 +75,11 @@ def main():
         print(name, "passed", flush=True)
         return text
 
-    def capture(name, script, *, record=True, fixture=None, wide=False, extra=None):
+    def capture(name, script, *, record=True, fixture=None, wide=False, extra=None, paced=False):
         directory = work / name
         directory.mkdir()
         (directory / "logs").mkdir()
-        (directory / "config.ini").write_text(CONFIG)
+        (directory / "config.ini").write_text(CONFIG.replace("DisableFrameDelay=1", "DisableFrameDelay=0") if paced else CONFIG)
         (directory / "input.script").write_text(script)
         (directory / "sm-video.ini").write_text(
             f"[SuperMetroidVideo]\nEnhancedRenderer={int(wide)}\nAspect=21:9\nPresentationEnabled={int(wide)}\nPresentationFPS=120\nHudAnchored=1\n")
@@ -188,8 +190,11 @@ def main():
         raise AssertionError("divergence evidence missing")
     if args.fixture:
         fixture = args.fixture.resolve(strict=True)
-        script = "press right 120\npress b 30\npress y 60\npress left 120\nwait 420\ndump end\nquit\n"
+        script = "press right 120\nrenderer toggle\npress b 30\npress y 60\nrenderer toggle\npress left 120\nwait 420\ndump end\nquit\n"
         recorded, segments = capture("gameplay", script, fixture=fixture, wide=True)
+        renderer_modes = {bool(int(line.split()[3],16)&8) for p in segments for line in p.read_text().splitlines() if line.startswith('I ')}
+        if renderer_modes != {False, True}:
+            raise AssertionError("renderer hotkey changes were not captured")
         plain, _ = capture("gameplay-unrecorded", script, record=False, fixture=fixture, wide=True)
         for suffix in ("wram.bin", "vram.bin", "sram.bin"):
             if (recorded / f"end.{suffix}").read_bytes() != (plain / f"end.{suffix}").read_bytes():
@@ -208,6 +213,33 @@ def main():
             raise AssertionError("checkpoint retention exceeded budget")
         for i, segment in enumerate(bounded):
             replay(segment, f"bounded-playback-{i}")
+    if args.phantoon_fixture:
+        # Observe the ROM's own AI transitions; never inject a boss phase or
+        # set a success flag. The old wrong-PB bug parks all gameplay RAM just
+        # before the first eye opening while host/audio frames keep advancing.
+        script = ("until16 079b == cd13 1\n"
+                  "until16 0fb2 == d60d 1800\ndump eye-open\n"
+                  "wait 120\ndump eye-active\n"
+                  "until16 0fb2 == d788 2400\ndump fireball-rain\n"
+                  "wait 120\ndump after-attack\nquit\n")
+        phases = ("eye-open", "eye-active", "fireball-rain", "after-attack")
+        observed = []
+        for label, extra in (("aot", {}), ("interpreter", {"SNESRECOMP_LLE_BOUNCE": "0"})):
+            directory, segments = capture("phantoon-" + label, script, fixture=args.phantoon_fixture,
+                                          record=label == "aot", wide=True, extra=extra, paced=True)
+            states = [(directory / (phase + ".wram.bin")).read_bytes() for phase in phases]
+            word = lambda data, address: struct.unpack_from("<H", data, address)[0]
+            if word(states[0], 0xfb2) != 0xd60d or word(states[2], 0xfb2) != 0xd788:
+                raise AssertionError("Phantoon did not enter the real eye and rain handlers")
+            if any(word(data, 0x998) != 8 or word(data, 0xf8c) == 0 for data in states):
+                raise AssertionError("Phantoon attack check lost living gameplay")
+            if states[0] == states[1] or states[2] == states[3]:
+                raise AssertionError("gameplay RAM froze during Phantoon attack")
+            observed.append([(word(data, 0xfb2), word(data, 0xf8c), word(data, 0x9c2)) for data in states])
+            for i, segment in enumerate(segments):
+                replay(segment, f"phantoon-playback-{i}")
+        if observed[0] != observed[1]:
+            raise AssertionError(f"Phantoon phases differ from interpreter: {observed}")
     report["status"] = "passed"
     save_report()
 

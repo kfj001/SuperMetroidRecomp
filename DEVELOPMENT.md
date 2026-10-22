@@ -1036,3 +1036,24 @@ The progression harness needs a trace-enabled build: production intentionally
 compiles out the TCP debug server. Its `--resume-state` argument consumes its
 input as a relaunch artifact; the acceptance harness now always gives it a
 disposable copy, preserving the original fixture.
+
+### Phantoon first eye attack (2026-10-22)
+
+The player's v0.3.12 Steam Deck report was a launcher-only exit at frame 0,
+but the described freeze reproduces from a living Phantoon room checkpoint.
+At frame 12060 the AOT path reaches a balanced pushed long call in
+ProcessEnemyInstructions ($A0:C292). It resolves $A7:808A but the shared
+cpu_dispatch_call_pc_pushed helper left PB=$A0. The handler's unresolved
+JMP ($0012) consequently interprets $A0:CF5E instead of $A7:CF5E, vectors
+through BRK, and parks in $80:8573. Gameplay WRAM becomes byte-identical
+across thousands of host frames while audio continues.
+
+Engine PR #206 scopes the requested PB around the compiled long callee,
+restoring the caller while propagating returns/yields. The runtime regression
+checks requested ROM mirror banks, long/near calls and yield propagation.
+Corrected AOT and interpreter control reach the natural eye-open ($D60D)
+and fireball-rain ($D788) phases. The acceptance harness now offers
+`--phantoon-fixture <living pre-intro checkpoint>` to observe those transitions,
+check that gameplay continues, and replay the entire recorded attack.
+The checkpoint bypasses room traversal; no AI phase, damage or success flags
+are injected. This check does not establish boss victory.

@@ -9,6 +9,7 @@
 #include "cpu_state.h"
 #include "desktop/config.h"
 #include "host_paths.h"
+#include "host_main.h"
 #include "execution_mode.h"
 #include "snes/snes.h"
 #include "snes/cart.h"
@@ -208,7 +209,7 @@ static bool write_snapshot(void) {
 }
 static unsigned policy(void) {
   return g_sm_video.enhanced | g_sm_video.fps_enabled<<1 | g_sm_video.hud_anchored<<2 |
-      g_config.new_renderer<<3 | g_config.no_sprite_limits<<4 | rtl_apu_extended_frame_timing()<<5;
+      snesrecomp_desktop_new_renderer()<<3 | g_config.no_sprite_limits<<4 | rtl_apu_extended_frame_timing()<<5;
 }
 static bool load_playback(void) {
   char line[512], version[80], revision[80], engine[80], target[80], tail;
@@ -264,7 +265,7 @@ static bool playback_begin(uint32_t *inputs) {
     error("invalid input/settings record or discontinuity without checkpoint");return false;
   }
   g_sm_video=(SmVideoSettings){(flags&1)!=0,(SmAspect)aspect,fps,(flags&2)!=0,(flags&4)!=0};
-  g_config.new_renderer=(flags&8)!=0; g_config.no_sprite_limits=(flags&16)!=0;
+  snesrecomp_desktop_set_new_renderer((flags&8)!=0); g_config.no_sprite_limits=(flags&16)!=0;
   if(flags&32)RtlEnableExtendedFrameTiming();
   if(!!(flags&32)!=rtl_apu_extended_frame_timing()) {error("different frame timing mode");return false;}
   *inputs=word; next_frame=frame+1; pending=true;
@@ -337,6 +338,9 @@ void SmReplayRendered(void) {
   if(!awaiting_render || failed || finished)return;
   awaiting_render=false;
   if(playing) {
+    if(snesrecomp_desktop_new_renderer()!=g_config.new_renderer) {
+      error("active renderer differs from the recording");return;
+    }
     if(incomplete_render)error("incomplete raster record (the original raster may have hung/crashed)");
     else ++playback_rows;
   } else {
