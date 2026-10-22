@@ -19,6 +19,7 @@ mkdir -p "$STAGE"
 cp "$BUILD/$EXE" "$STAGE/"
 cp -R "$BUILD/assets" "$STAGE/"
 cp VERSION framework_pins.txt README.md LICENSE "$STAGE/"
+cp tools/replay_diagnostic.py "$STAGE/replay_diagnostic.py"
 cp profiles/release.json "$STAGE/release-profile.json"
 # Repository defaults only. Never copy a developer's keybinds, ROM paths, saves,
 # writable mods, video settings or mute configuration from a build directory.

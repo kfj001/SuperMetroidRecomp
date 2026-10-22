@@ -37,6 +37,7 @@
 #include "common_cpu_infra.h"
 #include "cpu_state.h"
 #include "host_report.h"
+#include "config.h"
 #include "widescreen.h"
 #include "audio_trace.h"
 #include "snes/apu.h"
@@ -47,6 +48,8 @@
 #include "sm_renderer.h"
 #include "sm_video.h"
 #include "sm_spc_player.h"
+#include "sm_replay.h"
+#include "sm_startup.h"
 #if defined(RECOMP_LAUNCHER)
 #include "sm_mods.h"
 #endif
@@ -71,6 +74,13 @@ bool SmDisplay_IsWidescreenActive(void) { return g_sm_viewport.enhanced; }
 int SmDisplay_GetCurrentFrameWidth(void) { return snesrecomp_desktop_frame_width(); }
 
 static void SmAfterConfig(void) {
+  if (SmReplayPlaying()) {
+    g_config.autosave = false;
+    /* The host writes SRAM on exit even without autosave. Playback must never
+     * overwrite the player's progress, including direct CLI playback. */
+    RtlSetSaveRoot("replay-saves");
+    RtlSetQuickSaveRoot("replay-saves");
+  }
   if (!SmVideoLoad(&g_sm_video, kSmVideoConfig))
     fprintf(stderr, "[video] Invalid settings in %s; valid entries retained.\n", kSmVideoConfig);
   SmRendererReset();
@@ -90,15 +100,12 @@ static void SmAfterConfig(void) {
 }
 
 static void SmOnRomLoaded(const uint8_t *rom, size_t size) {
+  SmReplayRomLoaded(rom, (unsigned)size);
   SmRendererSetRom(rom, size);
 }
 
 static void SmOnReset(void) {
   SmRendererReset();
-}
-
-static void SmBeforeRunFrame(void) {
-  if (SmCustomRendererEnabled()) SmRendererLatchObjectState(g_ram);
 }
 
 /* Door loading can take longer than a frame. Keep its debt only while the
@@ -112,6 +119,7 @@ static int SmKeepPacingDebt(void) {
 
 static void SmPrepareFrame(int drawable_w, int drawable_h, int *frame_w, int *frame_h) {
   g_sm_viewport = SmCalculateViewport(&g_sm_video, drawable_w, drawable_h);
+  SmReplayViewport(&g_sm_viewport);
   *frame_w = g_sm_viewport.width;
   *frame_h = SM_HEIGHT;
 }
@@ -125,6 +133,7 @@ static void SmBeginSimFrame(unsigned number) {
 static void SmEndSimFrame(const uint8_t *field, unsigned number) {
   if (SmCustomRendererEnabled())
     SmRendererEndFrame((const uint32_t *)field);
+  SmReplayRendered();
   const char *capture_frame = getenv("SM_CAPTURE_FRAME");
   const char *capture_path = getenv("SM_CAPTURE_PATH");
   if (capture_frame && capture_path && number == strtoul(capture_frame, NULL, 10))
@@ -172,6 +181,9 @@ static void SmCloseAudioProbe(void) {
   g_audio_probe = NULL;
 }
 static void SmAfterRunFrame(const SnesDesktopHostFrameStats *st) {
+  if (SmReplayPlaying() && (SmReplayFinished() || SmReplayFailed())) {
+    SDL_Event quit = {0}; quit.type = SDL_QUIT; SDL_PushEvent(&quit);
+  }
   static int probe_checked;
   if (!probe_checked) {
     probe_checked = 1;
@@ -230,8 +242,8 @@ static const SnesDesktopHostGame kSuperMetroidHost = {
   .after_config = &SmAfterConfig,
   .on_rom_loaded = &SmOnRomLoaded,
   .on_reset = &SmOnReset,
-  .before_run_frame = &SmBeforeRunFrame,
   .after_run_frame = &SmAfterRunFrame,
+  .on_shutdown = &SmReplayShutdown,
   .keep_pacing_debt = &SmKeepPacingDebt,
 
   .prepare_frame = &SmPrepareFrame,
@@ -247,5 +259,25 @@ static const SnesDesktopHostGame kSuperMetroidHost = {
 #undef main   /* desktop: keep plain main() even if SDL_main.h remapped it */
 #endif
 int main(int argc, char **argv) {
-  return snesrecomp_desktop_main(&kSuperMetroidHost, argc, argv);
+  SmStartupLogging();
+  for (int i = 1; i < argc; ++i) {
+    if (!strcmp(argv[i], "--config") && i + 1 < argc)
+      SmReplaySetConfigPath(argv[i + 1]);
+    if (strcmp(argv[i], "--replay-diagnostic")) continue;
+    if (i + 1 >= argc || !SmReplayPlayback(argv[i + 1])) return 2;
+    memmove(argv + i, argv + i + 2, (size_t)(argc - i - 1) * sizeof(*argv));
+    argc -= 2; --i;
+  }
+  if (SmReplayPlaying()) {
+    for (int i = 1; i < argc; ++i) {
+      if (!strcmp(argv[i], "--resume-state") || !strcmp(argv[i], "--script")) {
+        fprintf(stderr, "Replay playback cannot be combined with --resume-state or --script.\n");
+        SmReplayShutdown();
+        return 2;
+      }
+    }
+  }
+  int result = snesrecomp_desktop_main(&kSuperMetroidHost, argc, argv);
+  SmReplayShutdown();
+  return SmReplayPlaying() && (SmReplayFailed() || !SmReplayFinished()) ? 2 : result;
 }

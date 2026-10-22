@@ -54,6 +54,61 @@ The default LLE-first build boots, renders, plays audio, completes the attract
 demo, starts a new game, traverses doors, pauses, and saves at Samus's ship.
 It remains a work in progress and needs broader end-to-end regression testing.
 
+## Reporting a gameplay problem
+
+Session logs and gameplay replay capture are **enabled automatically**, including
+after an update. No diagnostic mod or console setup is needed. When a problem
+occurs, stop playing and quit normally if possible. Zip the session's
+`logs/sm-*.log` and **all matching `logs/sm-replay-*` files**: `.replay`,
+`.replay.sav`, `.replay.config.ini` and `.replay.mods.txt`. A `.replay` alone is
+insufficient. Attach `last_run_report.json` and any `crash_report_*.json` or
+`crash_minidump_*.dmp` files too, before launching the game again. Include your
+release version, OS, what happened and roughly when. Keep your ROM out of the ZIP.
+
+Logs normally live beside the executable. Windows falls back to
+`%TEMP%/SuperMetroidSNESRecomp/logs` if the installation is read-only. On Linux
+and macOS, session logs fall back to `$XDG_STATE_HOME/SuperMetroidSNESRecomp/logs`
+(normally `~/.local/state/SuperMetroidSNESRecomp/logs`), then
+`/tmp/SuperMetroidSNESRecomp`. Replay fallback uses
+`$TEMP/SuperMetroidSNESRecomp/logs`, then `$TMPDIR/SuperMetroidSNESRecomp/logs`
+when TEMP is absent. `SM_REPLAY_DIR` selects an existing writable replay folder.
+Explicit shell output redirection is preserved. `logging.ini` beside the
+executable can request a console with `[Logging] Console=1`.
+
+Each session's rolling history keeps up to one hour of inputs and settings (360 segments),
+with a 256 MiB budget for machine checkpoints. Each segment contains at most
+600 executions or 16 MiB of checkpoints. Frequent save/load or rewind can
+shorten the history; each jump records the actual restored machine. Frame
+hashing and disk writes run on a background worker with a fixed 16 MiB queue.
+Slow or failed storage stops capture with an explicit log message and keeps
+gameplay running. Quit normally to drain accepted records. Abrupt termination
+can lose the unflushed tail; the worker flushes every 100 ms.
+
+Capture supports the default LLE execution mode. Optional HLE's suspended host
+fiber cannot be restored in another process; recording suspends with a warning
+in that mode. Run-ahead also suspends capture, as in MMX. Leave run-ahead off
+when collecting a report. Set `SM_REPLAY_RECORD=0` to opt out of recording.
+Ordinary game sessions retain normal audio and SRAM behavior.
+
+The release includes `replay_diagnostic.py` for developers/support (Python 3.8+
+only needed for this optional tool). Use the exact recording release and
+platform, plus your own matching ROM:
+
+```sh
+python replay_diagnostic.py capture.replay --exe path/to/SuperMetroidSNESRecomp --rom path/to/sm.sfc --headless
+```
+
+Omit `--headless` to watch with the captured audio settings; `--mute` mutes a
+visible reproduction. `--check` validates
+records and checkpoint checksums without launching. `--until N` stops after N
+completed executions. Each reproduction gets a new directory beside the logs
+(or use `--work-dir`), isolated settings and SRAM, and `replay.log`. It restores
+the captured widescreen/aspect/FPS/HUD and guest renderer settings, checks WRAM,
+CPU, APU RAM and VRAM after every execution, and exits nonzero at the first
+divergence with `replay-divergence.sav`. The final input of an interrupted
+recording is executed to reproduce the fault; it is never counted as a successful
+replay. `--timeout` controls the default 120-second deadline.
+
 ## Screenshots
 
 Custom widescreen at the landing site, with energy and the minimap anchored

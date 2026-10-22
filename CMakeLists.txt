@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(SuperMetroidSNESRecomp VERSION 0.3.12 LANGUAGES C)
+project(SuperMetroidSNESRecomp VERSION 0.3.13 LANGUAGES C)
 
 # Cross-platform (macOS/Linux/MinGW) build for SuperMetroidSNESRecomp.
 #
@@ -89,6 +89,9 @@ if(BUILD_TESTING AND NOT ANDROID)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/door_audio_trace_test.py)
     add_test(NAME sm_release_payload
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/release_payload_test.py)
+    add_test(NAME sm_replay_inspector
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/replay_diagnostic_test.py)
+    add_subdirectory(${SNESRECOMP_ROOT}/runner/tests/diagnostics diagnostic-writer-tests)
 
 endif()
 
@@ -172,6 +175,8 @@ set(SM_HOST_SOURCES
     ${SNESRECOMP_RUNNER_SOURCES}
     # game-specific runtime
     src/main.c            # host shim: identity + this title's hooks
+    src/sm_startup.c      # session log, including launcher and early failures
+    src/sm_replay.c       # default bounded automatic diagnostic replay
     src/sm_rtl.c          # THE PORT: single-fiber frame model, NMI/IRQ, HDMA
     src/sm_cpu_infra.c    # RtlGameInfo registration
     src/sm_post_mortem.c  # the "sm" crash-report section (framework hook)
@@ -189,6 +194,9 @@ if(ANDROID)
     set_target_properties(SuperMetroidSNESRecomp PROPERTIES OUTPUT_NAME main)
 else()
     add_executable(SuperMetroidSNESRecomp ${SM_HOST_SOURCES})
+    if(WIN32)
+        set_target_properties(SuperMetroidSNESRecomp PROPERTIES WIN32_EXECUTABLE TRUE)
+    endif()
 endif()
 
 
@@ -230,6 +238,28 @@ endif()
 # hooks. Before 2026-09 all of it was a 2,800-line private copy of the host in
 # src/main.c, ahead of the framework's in places and behind it in others.
 snesrecomp_target_desktop_host(SuperMetroidSNESRecomp TIER2)
+find_package(Git REQUIRED)
+execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE SM_REPLAY_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
+file(GLOB SM_REPLAY_ID_INPUTS CONFIGURE_DEPENDS src/*.c src/*.h recomp/*.cfg profiles/*.json)
+list(APPEND SM_REPLAY_ID_INPUTS ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+    ${CMAKE_CURRENT_SOURCE_DIR}/framework_pins.txt ${CMAKE_CURRENT_SOURCE_DIR}/VERSION)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${SM_REPLAY_ID_INPUTS})
+set(SM_REPLAY_SOURCE_ID "${CMAKE_C_FLAGS};${CMAKE_C_FLAGS_RELEASE};${CMAKE_CXX_FLAGS};${CMAKE_CXX_FLAGS_RELEASE}")
+foreach(input IN LISTS SM_REPLAY_ID_INPUTS)
+    file(SHA256 ${input} input_hash)
+    string(APPEND SM_REPLAY_SOURCE_ID ";${input_hash}")
+endforeach()
+string(SHA256 SM_REPLAY_SOURCE_ID "${SM_REPLAY_SOURCE_ID}")
+string(SUBSTRING ${SM_REPLAY_SOURCE_ID} 0 16 SM_REPLAY_SOURCE_ID)
+string(APPEND SM_REPLAY_REVISION "-${SM_REPLAY_SOURCE_ID}")
+execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
+    WORKING_DIRECTORY ${SNESRECOMP_ROOT}
+    OUTPUT_VARIABLE SM_REPLAY_ENGINE OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
+set_property(SOURCE src/sm_replay.c APPEND PROPERTY COMPILE_DEFINITIONS
+    SM_REPLAY_REVISION="${SM_REPLAY_REVISION}" SM_REPLAY_ENGINE="${SM_REPLAY_ENGINE}"
+    SM_REPLAY_TARGET="${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}-${CMAKE_C_COMPILER_ID}-${CMAKE_C_COMPILER_VERSION}-${CMAKE_BUILD_TYPE}")
 # Every platform compiles and links the same generated program.
 snesrecomp_target_generated_code(SuperMetroidSNESRecomp ${SM_GEN_DIR})
 # gen_stubs.c holds this port's hand-written bodies for hle_func targets. They
@@ -266,7 +296,7 @@ snesrecomp_target_fiber_compat(SuperMetroidSNESRecomp)
 set(SNESRECOMP_BUILD_VERSION "${PROJECT_VERSION}" CACHE STRING
     "Release version stamp baked into crash reports (empty = dev)")
 if(SNESRECOMP_BUILD_VERSION)
-    target_compile_definitions(SuperMetroidSNESRecomp PRIVATE
+    set_property(SOURCE src/main.c src/sm_replay.c APPEND PROPERTY COMPILE_DEFINITIONS
         SNESRECOMP_BUILD_VERSION="${SNESRECOMP_BUILD_VERSION}")
 endif()
 

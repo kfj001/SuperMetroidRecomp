@@ -99,12 +99,19 @@ def audit(archive_path):
             path = PurePosixPath(name)
             if '\\' in name or path.is_absolute() or '..' in path.parts:
                 raise ValueError(f'Unsafe ZIP path: {name}')
-            if path.suffix.lower() in ('.sfc', '.smc', '.rom', '.srm', '.sav', '.c', '.h', '.py', '.a', '.o', '.obj'):
+            # This standalone support tool is intentionally shipped; no other
+            # Python, game source, generated C or build tooling is public.
+            support_helper = len(path.parts) == 2 and path.name == 'replay_diagnostic.py'
+            if path.suffix.lower() in ('.sfc', '.smc', '.rom', '.srm', '.sav', '.c', '.h', '.py', '.a', '.o', '.obj') and not support_helper:
                 raise ValueError(f'Build input or private state in package: {name}')
+            if path.suffix.lower() in ('.replay', '.dmp', '.jsonl') or '.replay.' in path.name or path.name.startswith(('crash_report_', 'last_run_report')):
+                raise ValueError(f'Private diagnostics in package: {name}')
+            if 'logs' in path.parts[1:]:
+                raise ValueError(f'Private diagnostics in package: {name}')
             if any(part in ('toolchain', 'src', 'recomp', 'recomp-ui', 'snesrecomp', 'saves') for part in path.parts[1:]):
                 raise ValueError(f'Build tree or state in package: {name}')
         root = next(iter(roots)) + '/'
-        for required in ('VERSION', 'framework_pins.txt', 'release-profile.json', 'config.ini', 'README.md'):
+        for required in ('VERSION', 'framework_pins.txt', 'release-profile.json', 'config.ini', 'README.md', 'replay_diagnostic.py'):
             if root + required not in names:
                 raise ValueError(f'Missing package file: {required}')
         if not any(n.startswith(root + 'assets/') for n in names):

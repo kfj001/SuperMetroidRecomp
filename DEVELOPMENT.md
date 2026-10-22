@@ -1004,3 +1004,35 @@ Tracking: **beads-8wg.6.11**, **beads-8wg.2.126**.
 ## Owner-gated (do NOT do without explicit decision)
 Merging `investigate/sm-0012-blocker` or the multi-tier branches to main;
 releasing any game; reconciling the multi-tier branches; editing `src/gen/`.
+# 2026-10-22: automatic diagnostic sessions and gameplay replay
+
+Super Metroid now uses snesrecomp's bounded background replay writer (the
+already-landed engine PR #175, pin a6be975) and the existing simulation-frame
+callbacks. `sm_startup.c` adapts MMX's session log setup; `sm_replay.c` adapts its
+rolling checkpoint/input recorder for SM's pointer-free LLE continuation and
+built-in presentation settings. Normal play records by default, including
+upgrades; `SM_REPLAY_RECORD=0` opts out. HLE fibers and run-ahead explicitly
+suspend capture rather than producing an unusable replay.
+
+The format records every input, settings, actual post-query viewport dimensions,
+and WRAM/CPU/APU-RAM/VRAM checks. The viewport record is written after the raster
+and read ahead during replay, so the first frame and window-resize boundaries
+use their actual captured Fit width. Both a missing guest result and a missing
+raster result remain incomplete: replay executes the interrupted phase and
+cannot report success if it returns. Build/target and ROM identity are checked
+before restoring or executing a checkpoint. Playback uses separate SRAM roots.
+
+Validation commands: `ctest --test-dir <build> --output-on-failure` (12 tests,
+including the shared blocked-writer/I/O-failure regressions), and
+`python tests/test_diagnostic_replay.py --exe <game> --rom <owned JU ROM>
+--fixture <gameplay.sav> --work-dir <new directory>`. ROM-backed coverage includes
+independent segment replay, Phantoon-room movement/jump/shoot inputs, equality
+with recording disabled, save/load discontinuities, bounded checkpoint eviction,
+default session logging, wrong build/ROM, damaged and malformed checkpoints,
+interrupted guest/raster records and explicit divergence evidence. Checkpoints
+used to position the scene are QA setup, not evidence of a boss victory.
+
+The progression harness needs a trace-enabled build: production intentionally
+compiles out the TCP debug server. Its `--resume-state` argument consumes its
+input as a relaunch artifact; the acceptance harness now always gives it a
+disposable copy, preserving the original fixture.

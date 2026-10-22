@@ -25,6 +25,12 @@ saves/
 
 # Crash / boot diagnostics (generated at runtime)
 last_run_report.json
+logs/
+replay-saves/
+*.replay
+*.replay.*
+crash_report_*.json
+crash_minidump_*.dmp
 boot_trace*.txt
 tier2_coverage.json
 

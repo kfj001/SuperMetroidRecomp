@@ -71,6 +71,22 @@ class ReleaseBoundaryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Build input'):
             payload.audit(path)
 
+    def test_public_package_only_allows_the_standalone_support_script(self):
+        path = self.root / 'runtime.zip'
+        files = ['VERSION', 'framework_pins.txt', 'release-profile.json', 'config.ini',
+                 'README.md', 'replay_diagnostic.py', 'assets/boxart.tga', 'SuperMetroidSNESRecomp']
+        def make(extra=None):
+            with zipfile.ZipFile(path, 'w') as archive:
+                for name in files + ([extra] if extra else []):
+                    archive.writestr('runtime/' + name, 'fixture')
+        make()
+        payload.audit(path)
+        for name in ('another.py', 'tools/replay_diagnostic.py', 'capture.replay.config.ini',
+                     'logs/session.log', 'crash_report_123.json', 'crash_minidump_123.dmp'):
+            make(name)
+            with self.assertRaises(ValueError):
+                payload.audit(path)
+
 
 if __name__ == '__main__':
     unittest.main()
