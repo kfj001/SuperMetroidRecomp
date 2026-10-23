@@ -428,9 +428,6 @@ static void DrawPanel(uint32_t *dst, int stride, int width, int height) {
     snes_ovl_fill_rect(dst, stride, height, extra + game_width, 0, width - extra - game_width, height, 0xFF000000u);
   }
 
-  /* Border around the ROM game rect. */
-  snes_ovl_stroke_rect(dst, stride, height, extra + 5, 5, game_width - 10, game_height - 10, 0xFF3A4A6Au);
-
   /* Tab strip: MAP / EQUIP / OPTIONS, with the current tab lit. */
   {
     int y = 10;
@@ -441,16 +438,19 @@ static void DrawPanel(uint32_t *dst, int stride, int width, int height) {
     SmRomGlyphDraw(dst, stride, width, height, ox, y, "OPTIONS", COL_TABON, 1);
   }
 
-  snes_ovl_fill_rect(dst, stride, height, extra + 10, 24, width - 20, 1, COL_BORDER);
-  {
-    int x = extra + (game_width - TextLen("GAME OPTIONS") * 8) / 2;
-    SmRomGlyphDraw(dst, stride, width, height, x, 30, "GAME OPTIONS", COL_TITLE, 1);
-  }
-  snes_ovl_fill_rect(dst, stride, height, extra + 10, 42, width - 20, 1, COL_BORDER);
+  snes_ovl_fill_rect(dst, stride, height, extra + 10, 24, game_width - 20, 1, COL_BORDER);
+
+  /* The window itself: the pause screen's BG2 frame at its native 256x160
+   * footprint (rows 5..24 of the ROM tilemap), with the 12-tile label gap in
+   * the top edge. GAME OPTIONS is exactly 12 small-font cells wide. */
+  SmRomPauseFrameDraw(dst, stride, width, height,
+                      extra, 40, game_width, 160, 10, 12);
+  SmRomGlyphDraw(dst, stride, width, height,
+                 extra + 10 * 8, 40, "GAME OPTIONS", COL_TITLE, 1);
 
   /* Rows, as the model reports them. The 8x8 font is upper-case only, so
    * "On" and "Fit" draw as ON and FIT. Eleven rows at 13px pitch from y=50
-   * reach 180, leaving room for the hint before the frame's bottom edge. */
+   * reach 187, inside the frame's y=48..191 interior. */
   {
     const size_t count = recomp_runtime_ui_view_row_count(g_ui);
     const size_t selected = recomp_runtime_ui_view_selected_row(g_ui);
@@ -476,11 +476,10 @@ static void DrawPanel(uint32_t *dst, int stride, int width, int height) {
     }
   }
 
-  /* Bottom glyph row (L/R move tabs, START exits). */
+  /* Bottom glyph row (L/R move tabs, START exits), just below the frame. */
   {
     int y = height - 20;
-    snes_ovl_fill_rect(dst, stride, height, extra + 10, y - 6, game_width - 20, 1, COL_BORDER);
     SmRomGlyphDraw(dst, stride, width, height, extra + 14, y, "L < > R MOVE TABS", COL_DIM, 1);
-    SmRomGlyphDraw(dst, stride, width, height, extra + 14 + 16 * 8, y, "START EXIT", COL_ACCENT, 1);
+    SmRomGlyphDraw(dst, stride, width, height, extra + 14 + 17 * 8, y, "START EXIT", COL_ACCENT, 1);
   }
 }

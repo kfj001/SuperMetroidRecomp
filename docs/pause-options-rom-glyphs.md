@@ -4,7 +4,8 @@ The pause menu's Options tab is a host overlay (see `sm_pause_options.h`), not a
 recompiled screen. M1 gave it the panel model, geometry, SFX and fades. M2 makes
 its text real Super Metroid text: the tab strip, title and footer now draw the
 cartridge's 8x8 small font, read from ROM in place, instead of the framework's
-outline font.
+outline font. M2 also gives the panel the cartridge's own window frame: the
+same BG2 edge tiles the Map and Equipment pause screens use.
 
 Nothing under `src/gen/` changed, no ROM patch was made, and no glyph or
 palette asset was copied out of the cartridge. The only new pixel data in the
@@ -51,9 +52,14 @@ p = ((w0 >> bit) & 1) | (((w0 >> (bit+8)) & 1) << 1)
 ```
 
 where `w0` is the plane-0/1 word and `w1` the plane-2/3 word for that row.
-Pixel `0` is transparent. The font uses two tones: `14` (white/main) and `13`
-(dark-blue shadow). The overlay has one colour per string, so it draws both
-tones in that colour; the resulting silhouette is the full glyph.
+Pixel `0` is transparent. The font uses two tones: `14` (main) and `13`.
+Tone `13` is a bottom-right shadow inside the tile (not a separate glyph
+layer): in `A` it fills the inner right edge, in `T` the right side of the
+stem. The overlay draws tone `14` in the string colour and tone `13` in a
+darker shade of it (40% of each RGB channel). Painting both tones in the main
+colour makes the shadow a white duplicate edge -- text that reads as doubled.
+The shadow shade is host-derived, not read from CGRAM, and the shadow is
+intrinsic to the glyph shape, so no duplicate draw call is involved.
 
 The same A-Z bytes are also present in the copy the file-select screen loads
 from ROM `0x70000`; the `$B6:$C000` copy was used so the pause data bank stays
@@ -63,6 +69,41 @@ option), not the small font. The small font is uppercase only.
 
 The only non-ROM glyph shapes in the overlay are the `<` / `>` navigation
 chevrons. They are generated in `sm_rom_glyphs.c`, not extracted from the ROM.
+
+### Pause-window frame
+
+The pause screens' window edge is in the same cartridge data bank. The base
+BG2 tilemap is **`$B6:$E000`** (loaded to VRAM `0x3800` by
+`LoadPauseScreenBaseTilemaps`); rows 5..24 hold the frame, and every frame cell
+selects **palette 2**. The four shapes are in the BG2 tileset at **`$B6:$8000`**
+(loaded to VRAM `0x0000`):
+
+| tile | role | pixels |
+| --- | --- | --- |
+| `0xbe` | horizontal bar | a 4-line bevel across rows 2..5: gray, light gray, white, gray |
+| `0xcf` | vertical bar | the same bevel in columns 2..5 |
+| `0xbf` | diagonal corner | joins a bar and a side; flipped for the other three corners |
+| `0xbd` | double-line cap | terminates the top edge either side of the area-label gap |
+
+Palette 2 at **`$B6:$F000`** uses entries `4` = black, `13` = white,
+`14` = light gray, `15` = gray. The renderer reads those sixteen BGR555 words
+through `SmRomByte` at draw time and expands them to ARGB8888; no palette or
+tile is stored in the repository.
+
+`SmRomPauseFrameDraw` reproduces the native `256x160` frame at `y=40` (tilemap
+rows 5..24):
+
+* top row: corner `0xbf` (hflip), eight `0xbe`, cap `0xbd` (hflip), a 12-tile
+  gap, cap `0xbd`, eight `0xbe`, corner `0xbf`;
+* bottom row: the same cells with the corners/bars vflipped;
+* sides: `0xcf` mirrored on the left, plain on the right, rows 6..23.
+
+The gap is 12 cells (`x=80..175`), which is exactly `GAME OPTIONS` in the small
+font, so the title sits in the top edge like the ROM's `BRINSTAR` area label.
+The frame replaces the host-drawn rectangle that used to surround the panel.
+The interior background is still the host `COL_BG`; the ROM's interior fill
+tile (tilemap entry `0x0812`, a sparse dot pattern) is not drawn because the
+panel's background is host-owned.
 
 ## Ground truth and how it was verified
 
@@ -166,9 +207,12 @@ runtime capture work.
 ## Tests
 
 `tests/sm_pause_options_test.c` supplies a synthetic 4bpp font at
-`$B6:C000 + tile*32` (offset `0x4000` in its `$B6:8000..FFFF` window). The
-pattern is generated, not extracted, and differs per tile so a wrong
-char -> tile map or a plane/row mix-up changes the golden hash.
+`$B6:C000 + tile*32` (offset `0x4000` in its `$B6:8000..FFFF` window). It also
+generates the four frame tiles (`0xbd/0xbe/0xbf/0xcf` at offset `0`) and
+palette 2 (at offset `0x7000 + 64`), so the frame's tile decode, flips and
+palette lookup are covered by the goldens rather than silently transparent.
+The patterns are generated, not extracted, and differ per tile so a wrong
+char -> tile map, flip or plane/row mix-up changes the golden hash.
 
 The panel's state model was also corrected for the no-pin design: while the
 guest is paused it stays open on whichever pause screen it is on (Map or
@@ -204,11 +248,12 @@ Current result: all 10 CTest tests pass, including `sm_pause_options`.
 
 ## Files
 
-* `src/sm_rom_glyphs.c` / `.h` - 4bpp decode, char -> tile map, chevrons.
-* `src/sm_pause_options.c` - calls the renderer; stay-open model; `COL_BG`
-  background restored; dead `RomCol` colour-decoder removed (its CGRAM
-  channel order was inverted, and the panel uses fixed ARGB colours).
-* `tests/sm_pause_options_test.c` - synthetic 4bpp font, no-pin expectations,
-  26 recalibrated hashes.
+* `src/sm_rom_glyphs.c` / `.h` - 4bpp decode, char -> tile map, chevrons,
+  pause-window 9-slice and palette-2 expansion.
+* `src/sm_pause_options.c` - calls the renderer; frame layout; stay-open model;
+  `COL_BG` background; dead `RomCol` colour-decoder removed (its CGRAM channel
+  order was inverted, and the panel uses fixed ARGB colours).
+* `tests/sm_pause_options_test.c` - synthetic 4bpp font and frame tiles,
+  no-pin expectations, 26 recalibrated hashes.
 * `CMakeLists.txt` - builds `sm_rom_glyphs.c` into the test and the
   `PAUSE_OPTIONS_TEST_CALIBRATE` switch.
