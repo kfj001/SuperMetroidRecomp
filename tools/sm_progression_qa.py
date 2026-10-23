@@ -5,6 +5,12 @@ The supplied ROM is never modified. All memory edits and controller commands
 are journalled. Injected room transitions are diagnostic coverage, not proof of
 an unassisted playthrough. Audio emulation stays enabled with a dummy device
 and zero output volume.
+
+Every session is headless: SDL's dummy video driver, no console window, no
+launcher. Tier-2 coverage capture is enabled from process start (instruction
+zero) and written as an identified checkpoint plus journal in the output
+directory; the always-on interpreted/AOT cycle counters are read back at the
+end of each session into execution.json and report.json.
 """
 from __future__ import annotations
 
@@ -95,7 +101,7 @@ class Rom:
 
 
 class Session:
-    def __init__(self, exe, rom, output, port=0, floor=None, wide=False, interpreter_only=False, interpret_targets=(), seed_sram=None, capture_profile=False):
+    def __init__(self, exe, rom, output, port=0, floor=None, wide=False, interpreter_only=False, interpret_targets=(), seed_sram=None, capture_profile=True):
         with socket.socket() as reservation:
             reservation.bind(('127.0.0.1', port))
             port = reservation.getsockname()[1]
@@ -118,8 +124,12 @@ class Session:
         for key in list(env):
             if key.startswith(('SM_', 'SNESRECOMP_')):
                 env.pop(key)
+        # Never show a window: SDL2 and SDL3 spell the video driver hint
+        # differently, so set both.
         env.update(SDL_AUDIODRIVER='dummy', SDL_AUDIO_DRIVER='dummy',
+                   SDL_VIDEODRIVER='dummy', SDL_VIDEO_DRIVER='dummy',
                    SNESRECOMP_DEBUG_PORT=str(port))
+        self.capture_profile = capture_profile
         if capture_profile:
             env.update(SNESRECOMP_TIER2_CAPTURE='1',
                        SNESRECOMP_TIER2_MANIFEST=str(self.output / 'tier2-profile.json'),
@@ -135,11 +145,15 @@ class Session:
         self.stdout = (self.output / 'stdout.log').open('wb')
         self.stderr = (self.output / 'stderr.log').open('wb')
         self.process = subprocess.Popen(
-            [str(Path(exe).resolve()), '--config', str(self.config), '--paused', str(Path(rom).resolve())],
-            cwd=self.output, env=env, stdout=self.stdout, stderr=self.stderr)
+            [str(Path(exe).resolve()), '--config', str(self.config), '--paused', '--no-launcher',
+             str(Path(rom).resolve())],
+            cwd=self.output, env=env, stdout=self.stdout, stderr=self.stderr,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         self.sock = None
         self.allow_rebase = False
         self.invincible = False
+        self.health_floor = 1999
+        self.step_chunk = 60
         self.assist_pickups = False
         deadline = time.monotonic() + 40
         while time.monotonic() < deadline:
@@ -196,9 +210,9 @@ class Session:
         self.command(f'set_controller {buttons}')
         remaining = frames
         while remaining:
-            count = min(remaining, 60)
+            count = min(remaining, self.step_chunk)
             if self.invincible:
-                self.word(0x9c2, 1999)
+                self.word(0x9c2, self.health_floor)
             result = self.command(f'step {count}')
             # The debug server decrements its step counter before publishing
             # the frame counter; wait for publication instead of mistaking
@@ -487,34 +501,152 @@ class Session:
         return dict(state=self.snapshot('station-saved'), load_station=self.word(0x78b),
                     sram_sha256=hashlib.sha256(after).hexdigest())
 
+    def mother_brain(self, timeline):
+        """Mother Brain via explicit phase injection; the ROM runs every phase.
+
+        Diagnostic assists, all journalled: the glass event is set instead of
+        shooting the tank, the brain's health is zeroed when each phase's AI
+        is active (the AI observes zero health itself, as for Ridley), and
+        Samus' health is held low during the rainbow beam so the ROM's own
+        baby Metroid sequence and hyper beam hand-off run. Returns once the
+        escape timebomb event is set."""
+        # Enemy slot 0 is the body, slot 1 the brain; AI pointers in bank A9.
+        first_phase, phase2_thinking, phase3_main = 0x87E1, 0xB605, 0xC209
+        self.write(0xd820, bytes([self.read(0xd820, 1)[0] | 0x04]))  # event 2
+        for address, value in ((0xaf6, 0x80), (0xb10, 0x80)):
+            self.word(address, value)
+        revive_start = 0xC059
+        zeroed, last, revived = set(), None, False
+        for _ in range(2400):
+            body_ai, brain_health = self.word(0xfa8), self.word(0xfcc)
+            state = self.state()
+            if (body_ai, state['state']) != last:
+                last = (body_ai, state['state'])
+                enemies = self.read(0xf78, 0x800)
+                slots = [dict(slot=slot, id=f'{struct.unpack_from("<H", enemies, slot * 0x40)[0]:04x}',
+                              ai=f'{struct.unpack_from("<H", enemies, slot * 0x40 + 0x30)[0]:04x}',
+                              health=struct.unpack_from('<H', enemies, slot * 0x40 + 0x14)[0])
+                         for slot in range(32) if struct.unpack_from('<H', enemies, slot * 0x40)[0]]
+                timeline.append(dict(frame=state['frame'], body_ai=f'{body_ai:04x}',
+                                     brain_health=brain_health, samus_health=state['health'],
+                                     game_state=state['state'], room=f"{state['room']:04x}",
+                                     enemies=slots))
+            if self.read(0xd821, 1)[0] & 0x40:  # event 0x0E: Zebes timebomb set
+                self.health_floor = 1999
+                return True
+            if body_ai in (first_phase, phase2_thinking, phase3_main) and brain_health:
+                if body_ai == first_phase:
+                    self.word(0xaf6, 0x80)
+                    self.word(0xb10, 0x80)
+                self.word(0xfcc, 0)
+                zeroed.add(body_ai)
+                timeline.append(dict(frame=state['frame'], assist=f'zero brain health at {body_ai:04x}'))
+            # Rainbow beam until the baby Metroid drains the brain: hold
+            # Samus low so the ROM's cut-in (health <= 4*damage(0x50)+20)
+            # runs, never at zero. From the brain's revival (36000 health,
+            # Phase2_Revive_0 at $A9:C059) the baby heals Samus to full and
+            # must see her full, so the normal refill resumes.
+            if brain_health == 36000 or body_ai >= revive_start:
+                revived = True
+            self.health_floor = 30 if phase2_thinking in zeroed and not revived else 1999
+            # The baby Metroid's two waits for the brain's attacks to drain it
+            # (ShitroidInCutscene_IdleUntilToNoHealth $A9:CABD after healing
+            # Samus, ShitroidInCutscene_FinalCharge $A9:CBD8) each observe
+            # zero health themselves. Inject those phases too; the release,
+            # the death, the hyper beam hand-off remain the ROM's.
+            if revived:
+                enemies = self.read(0xf78, 0x800)
+                for slot in range(2, 32):
+                    base = slot * 0x40
+                    if (struct.unpack_from('<H', enemies, base + 0x30)[0] in (0xcabd, 0xcbd8)
+                            and struct.unpack_from('<H', enemies, base + 0x14)[0]):
+                        self.word(0xf78 + base + 0x14, 0)
+                        timeline.append(dict(frame=state['frame'], assist=f'zero baby Metroid health (slot {slot})'))
+            self.step(10)
+        return False
+
+    def ride_gunship(self, timeline, frames=48000):
+        """Board the ship during the escape and let the ending and credits run."""
+        enemies = self.read(0xf78, 0x800)
+        for slot in range(32):
+            if struct.unpack_from('<H', enemies, slot * 0x40 + 0x3a)[0] == 0xa9bd:  # GunshipTop_8
+                ship = 0xf78 + slot * 0x40
+                ship_x = struct.unpack_from('<H', enemies, slot * 0x40 + 2)[0]
+                ship_y = struct.unpack_from('<H', enemies, slot * 0x40 + 6)[0]
+                break
+        else:
+            raise RuntimeError('Gunship not found in landing site enemy slots')
+        for address, value in ((0xaf6, ship_x), (0xb10, ship_x), (0xafa, ship_y - 24), (0xb14, ship_y - 24)):
+            self.word(address, value)
+        # Enemies are only processed near the screen. A teleport skips the
+        # scroll triggers on the way, so the camera stays behind red scroll
+        # blocks: open the room's scrolls ($CD20, one byte per screen) and
+        # bring layer 1 ($0911/$0915) to the ship, then let it settle.
+        screens = self.word(0x7a9) * self.word(0x7ab)
+        self.write(0xcd20, bytes([1] * screens))
+        self.word(0x911, max(0, ship_x - 128))
+        self.word(0x915, max(0, ship_y - 128))
+        self.step(30)
+        if abs(self.word(0x911) + 128 - ship_x) >= 128:
+            raise RuntimeError(f'Camera did not reach the ship: layer1 x={self.word(0x911)}')
+        last, attempts = None, 0
+        for _ in range(frames // 60):
+            state = self.state()
+            if state['state'] != last:
+                last = state['state']
+                timeline.append(dict(frame=state['frame'], game_state=state['state'], room=f"{state['room']:04x}"))
+                self.snapshot(f"ending-state-{state['state']:02x}")
+            if state['state'] == 8:
+                if attempts < 4:
+                    # GunshipTop_8's boarding test, as the guest sees it.
+                    timeline.append(dict(frame=state['frame'], board_attempt=attempts,
+                                         samus=(self.word(0xaf6), self.word(0xafa)),
+                                         movement=self.read(0xa1f, 1)[0], alfa=f'{self.word(0xa42):04x}',
+                                         ship=(self.word(ship + 2), self.word(ship + 6)),
+                                         ship_ai=f'{self.word(ship + 0x3a):04x}'))
+                attempts += 1
+                # GunshipTop_8 needs Samus standing (movement type 0) on the
+                # frame Down is newly pressed; stand up first if not.
+                if self.read(0xa1f, 1)[0]:
+                    self.step(1, 'up')
+                    self.step(29)
+                else:
+                    self.step(1, 'down')
+                    self.step(59)
+            else:
+                self.step(60)
+        return last
+
+    def execution(self):
+        """Read the always-on counters; nothing is armed by this query.
+
+        interp_stats and interp_profile accumulate from instruction zero, so
+        the reply covers the whole session up to the current frame."""
+        stats = self.command('interp_stats')
+        profile = self.command('interp_profile top=64')
+        result = dict(frame=self.command('frame')['frame'], interp_stats=stats,
+                      interp_profile=profile)
+        (self.output / 'execution.json').write_text(json.dumps(result, indent=2) + '\n')
+        return result
+
     def close(self):
         if getattr(self, 'process', None) and self.process.poll() is None:
-            requested = False
-            if os.name == 'nt' and getattr(self, 'sock', None):
-                # Ask only our own SDL window to close, allowing real SRAM
-                # persistence and the normal exit report to run.
-                import ctypes
-                from ctypes import wintypes
-                user32 = ctypes.WinDLL('user32', use_last_error=True)
-                callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-                user32.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
-                user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-                user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-                def close_window(window, _):
-                    pid = wintypes.DWORD()
-                    user32.GetWindowThreadProcessId(window, ctypes.byref(pid))
-                    if pid.value == self.process.pid:
-                        user32.PostMessageW(window, 0x10, 0, 0)
-                    return True
-                callback = callback_type(close_window)
-                user32.EnumWindows(callback, 0)
+            if getattr(self, 'sock', None):
+                # A headless host has no window to close and keeps running
+                # once released. Persist the final complete checkpoint (the
+                # periodic one is up to five seconds old) and the execution
+                # counters before stopping it, while the guest is paused at
+                # the frame the route ended on.
                 try:
-                    self.command('continue')
-                    self.process.wait(timeout=5)
-                    requested = True
-                except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
-                    pass
-            if not requested and self.process.poll() is None:
+                    self.final_execution = self.execution()
+                except (OSError, ValueError, RuntimeError) as error:
+                    self.final_execution = dict(error=str(error))
+                if self.capture_profile:
+                    try:
+                        self.command(f'tier2_dump {self.output / "tier2-profile.json"}')
+                    except (OSError, ValueError, RuntimeError) as error:
+                        self.final_execution['tier2_dump_error'] = str(error)
+            if self.process.poll() is None:
                 self.process.terminate()
                 self.process.wait(timeout=10)
         if getattr(self, 'sock', None):
@@ -547,8 +679,12 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--port', type=int, default=0, help='TCP port; default chooses an available local port')
     parser.add_argument('--floor', choices=('off', 'lle', 'hle'))
-    parser.add_argument('--capture-profile', action='store_true',
-                        help='capture an identified tier-2 profile in the private QA output')
+    parser.add_argument('--capture-profile', dest='capture_profile', action='store_true', default=True,
+                        help='capture an identified tier-2 profile in the private QA output (default)')
+    parser.add_argument('--no-capture-profile', dest='capture_profile', action='store_false',
+                        help='disable tier-2 capture (cycle counters remain always-on)')
+    parser.add_argument('--attract', type=int, default=0, metavar='FRAMES',
+                        help='power on and let the title/attract demos run FRAMES frames with no input')
     parser.add_argument('--wide', action='store_true')
     parser.add_argument('--interpreter-only', action='store_true', help='reference run with AOT bounces disabled')
     parser.add_argument('--interpret-targets', nargs='*', type=lambda x: int(x, 16), default=[])
@@ -572,6 +708,10 @@ def main():
     parser.add_argument('--start-room', type=lambda x: int(x, 16), default=0, help='resume a sweep at this room address')
     parser.add_argument('--boss-assist', action='store_true', help='one HP boss and high damage projectiles; require real boss flags')
     parser.add_argument('--boss-phase', action='store_true', help='allow explicit death-phase injection for Kraid, Phantoon and Ridley')
+    parser.add_argument('--endgame', action='store_true',
+                        help='Mother Brain by phase injection, timed escape to the ship, ending and credits')
+    parser.add_argument('--board-ship', action='store_true',
+                        help='from an escape landing-site seed, board the ship and run the ending')
     args = parser.parse_args()
     rom = Rom(args.rom)
     report = dict(schema=1, status='running',
@@ -584,7 +724,12 @@ def main():
         (game.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     write_report()
     try:
-        if args.seed_state:
+        if args.attract:
+            # No input from power-on: title, intro and the ROM's own demos.
+            game.step(args.attract)
+            report['initial'] = game.snapshot('attract')
+            print('attract', json.dumps(report['initial']), flush=True)
+        elif args.seed_state:
             shutil.copyfile(args.seed_state.resolve(strict=True), game.output / 'saves' / 'save0.sav')
             game.step(1)
             game.command('loadstate 0')
@@ -655,6 +800,41 @@ def main():
                     game.step(2)
                     shutil.copyfile(game.output / 'saves' / 'save1.sav', game.output / f'room-{target:04x}.sav')
                 write_report()
+        if args.endgame:
+            rooms = rom.rooms()
+            timeline = report.setdefault('endgame', dict(timeline=[]))['timeline']
+            game.invincible = True
+            game.write(0xd828, bytes([7] * 5 + [0, 0, 0]))  # Tourian boss alive
+            game.write(0x9a2, struct.pack('<HHHH', 0xf32f, 0xf32f, 0x100b, 0x100f))
+            door = min((d for room in rooms.values() for d in room['doors'] if d['destination'] == 0xdd58),
+                       key=lambda d: (bool(d['flags'] & 0x80), (d['direction'] & 3) >= 2))
+            report['endgame']['entry'] = game.transition(door)
+            game.step(120)
+            report['endgame']['mother_brain'] = game.mother_brain(timeline)
+            game.snapshot('mother-brain-done')
+            if not report['endgame']['mother_brain']:
+                raise RuntimeError('Mother Brain did not set the escape event')
+            for _ in range(60):  # death sequence and escape set-up
+                if game.state()['state'] == 8 and game.word(0x943):  # timer running
+                    break
+                game.step(60)
+            route = path_to(rooms, game.state()['room'], 0x91f8)
+            report['endgame']['escape_rooms'] = [f"{d['destination']:04x}" for d in route]
+            for door in route:
+                game.transition(door)
+            game.snapshot('escape-landing-site')
+            # A real reloadable checkpoint for --board-ship iterations.
+            game.command('savestate 1')
+            game.step(2)
+            shutil.copyfile(game.output / 'saves' / 'save1.sav', game.output / 'escape-landing-site.sav')
+            report['endgame']['final_state'] = game.ride_gunship(timeline)
+            game.snapshot('ending-final')
+            if report['endgame']['final_state'] not in (0x26, 0x27):
+                raise RuntimeError(f"Ending did not start: {report['endgame']['final_state']:#x}")
+        if args.board_ship:
+            timeline = report.setdefault('endgame', dict(timeline=[]))['timeline']
+            report['endgame']['final_state'] = game.ride_gunship(timeline)
+            game.snapshot('ending-final')
         if args.transition_probe:
             rooms = rom.rooms()
             current = game.state()['room']
@@ -674,6 +854,7 @@ def main():
         raise
     finally:
         game.close()
+        report['execution'] = getattr(game, 'final_execution', None)
         report['process_exit_code'] = game.process.returncode
         cases = report['cases']
         pickups = [item for case in cases for item in case.get('items', [])]
