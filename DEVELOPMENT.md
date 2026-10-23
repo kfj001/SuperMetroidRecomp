@@ -1183,3 +1183,19 @@ emulation uses a dummy output device. Evidence is retained in the private
 `snes-bundle-20261022/current-main` qualification directories. Earlier i5-4670
 performance figures describe the human-approved older baseline, not these
 current-main correctness runs.
+
+### Requalified with harvested release coverage
+
+Main advanced to `e4caf74` (PR #30) during integration. Preserve that release
+profile and its analyzer/inline-return fixes, and apply only the shared helper
+atop its engine `c978039` as `53bc03e`; `framework_pins.txt` records the same
+pin as the gitlink. The final harvested program again regenerates identically
+twice (123 banks, 15207 exact AOT variants, 10280 LLE entries). Release and
+all 15 CTests pass. Repeated final full-copy/optimized qualification passes
+the 3200-frame stock/wide/120 Hz traces and nine fixed artifacts, actual Mods
+Fit/rewind, 11000-frame audio-enabled Ceres stock/wide routes, and all nine
+fixed-alpha/aspect rotation images. This preserves the upstream gameplay
+coverage work without downgrading it to the earlier qualification base.
+Evidence: `sm-harvest-qualified`, `sm-harvest-fit-qualified`,
+`sm-harvest-ceres-qualified` and `sm-harvest-*.log` in the private bundle's
+`current-main` directory. No new current-main performance estimate is claimed.
