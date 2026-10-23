@@ -1,4 +1,5 @@
 #include "sm_renderer.h"
+#include "raster_snapshot.h"
 #include "sm_mode7.h"
 #include <string.h>
 #include <math.h>
@@ -9,8 +10,9 @@
  * cannot retroactively change an earlier line. */
 typedef struct SmRasterLine {
   uint8_t registers[PPU_SAVESTATE_REGS_SIZE];
-  uint16_t palette[256], oam[256], vram[0x8000];
+  uint16_t palette[256], oam[256];
   uint8_t high_oam[32];
+  const uint16_t *vram;
 } SmRasterLine;
 typedef struct SmSourceFrame {
   SmRasterLine lines[224];
@@ -21,7 +23,43 @@ typedef struct SmSourceFrame {
   uint8_t object_ram[0x20000];
   bool object_state_valid;
 } SmSourceFrame;
+/* Diagnostic disk records contain full images, independently of the in-memory
+ * representation. Stream them without allocating a 15 MB temporary frame. */
+typedef struct SmDiskRasterLine {
+  uint8_t registers[PPU_SAVESTATE_REGS_SIZE];
+  uint16_t palette[256], oam[256], vram[0x8000];
+  uint8_t high_oam[32];
+} SmDiskRasterLine;
+typedef struct SmDiskFrame {
+  SmDiskRasterLine lines[224];
+  uint8_t ram[0x20000];
+  uint32_t stock[256 * 224];
+  unsigned number, captured;
+  bool valid;
+  uint8_t object_ram[0x20000];
+  bool object_state_valid;
+} SmDiskFrame;
+#define SM_CAPTURE_TAIL_BYTES (sizeof(SmDiskFrame) - offsetof(SmDiskFrame, ram))
+_Static_assert(sizeof(SmDiskRasterLine) == PPU_SAVESTATE_REGS_SIZE + 0x10000 + 1056,
+    "capture line records have no implicit padding");
+_Static_assert(offsetof(SmSourceFrame, object_state_valid) - offsetof(SmSourceFrame, ram) ==
+    offsetof(SmDiskFrame, object_state_valid) - offsetof(SmDiskFrame, ram),
+    "capture metadata has the disk field layout");
+_Static_assert(SM_CAPTURE_TAIL_BYTES <= sizeof(SmSourceFrame) - offsetof(SmSourceFrame, ram),
+    "capture metadata fits the source frame");
 static SmSourceFrame frames[2];
+/* Current and previous frames have independent allocation lifetimes. The old
+ * frame remains readable by interpolation while the next frame is captured. */
+static SnesRasterSnapshotStore vram_snapshots[2];
+static bool capture_failed[2];
+static struct {
+  const Ppu *ppu;
+  uint32_t writes;
+  bool tracking, uncertain;
+} hardware_raster;
+#ifndef SM_RASTER_FULL_COPY
+#define SM_RASTER_FULL_COPY 0
+#endif
 static unsigned current;
 static Ppu scanout;
 static const uint8_t *renderer_rom;
@@ -47,6 +85,13 @@ void SmRendererLatchObjectState(const uint8_t ram[0x20000]) {
   object_state_latched = true;
 }
 SmRendererStats SmRendererGetStats(void) { return render_stats; }
+SmRasterStats SmRendererGetRasterStats(void) {
+  const SnesRasterSnapshotStore *s = &vram_snapshots[current];
+  return (SmRasterStats){s->copied_bytes,
+      vram_snapshots[0].allocated * vram_snapshots[0].image_bytes +
+      vram_snapshots[1].allocated * vram_snapshots[1].image_bytes,
+      sizeof(frames), s->compared_bytes, s->count};
+}
 const uint32_t *SmRendererStockFrame(void) {
   return frames[current].valid ? frames[current].stock : NULL;
 }
@@ -66,9 +111,18 @@ static bool save_capture(const SmSourceFrame *frame, const char *path) {
   if (!path || !frame->valid) return false;
   FILE *file = fopen(path, "wb");
   if (!file) return false;
-  const uint32_t header[3] = {0x534d5243, 2, sizeof(SmSourceFrame)};
-  bool ok = fwrite(header, sizeof(header), 1, file) == 1 &&
-            fwrite(frame, sizeof(SmSourceFrame), 1, file) == 1;
+  const uint32_t header[3] = {0x534d5243, 2, sizeof(SmDiskFrame)};
+  bool ok = fwrite(header, sizeof(header), 1, file) == 1;
+  for (unsigned y = 0; ok && y < 224; ++y) {
+    const SmRasterLine *line = &frame->lines[y];
+    ok = fwrite(line->registers, sizeof(line->registers), 1, file) == 1 &&
+         fwrite(line->palette, sizeof(line->palette), 1, file) == 1 &&
+         fwrite(line->oam, sizeof(line->oam), 1, file) == 1 &&
+         fwrite(line->vram, 0x10000, 1, file) == 1 &&
+         fwrite(line->high_oam, sizeof(line->high_oam), 1, file) == 1;
+  }
+  if (ok) ok = fwrite((const unsigned char *)frame + offsetof(SmSourceFrame, ram),
+      SM_CAPTURE_TAIL_BYTES, 1, file) == 1;
   return fclose(file) == 0 && ok;
 }
 bool SmRendererSaveCapture(const char *path) {
@@ -80,20 +134,32 @@ bool SmRendererLoadCapture(const char *path) {
   if (!file) return false;
   uint32_t header[3];
   SmSourceFrame *next = &frames[current ^ 1];
-  const size_t v1_size = (offsetof(SmSourceFrame, object_ram) + 3) & ~(size_t)3;
   bool ok = fread(header, sizeof(header), 1, file) == 1 &&
-            header[0] == 0x534d5243 &&
-            ((header[1] == 1 && header[2] == v1_size) ||
-             (header[1] == 2 && header[2] == sizeof(*next))) &&
-            fread(next, header[2], 1, file) == 1 &&
-            next->valid && next->captured == 224 && fgetc(file) == EOF;
-  fclose(file);
-  if (ok && header[1] == 1) {
-    /* Legacy captures did not retain pre-NMI owner state. Replay discrete
-     * objects for inspection, but do not claim trustworthy interpolation. */
-    memcpy(next->object_ram, next->ram, sizeof(next->object_ram));
-    next->object_state_valid = false;
+            header[0] == 0x534d5243 && header[1] == 2 &&
+            header[2] == sizeof(SmDiskFrame);
+  next->valid = false;
+  uint16_t *source = ok ? malloc(0x10000) : NULL;
+  ok = ok && source && SnesRasterSnapshotBegin(&vram_snapshots[current ^ 1], 0x10000, 224);
+  for (unsigned y = 0; ok && y < 224; ++y) {
+    SmRasterLine *line = &next->lines[y];
+    ok = fread(line->registers, sizeof(line->registers), 1, file) == 1 &&
+         fread(line->palette, sizeof(line->palette), 1, file) == 1 &&
+         fread(line->oam, sizeof(line->oam), 1, file) == 1 &&
+         fread(source, 0x10000, 1, file) == 1 &&
+         fread(line->high_oam, sizeof(line->high_oam), 1, file) == 1;
+    if (ok) {
+      line->vram = SnesRasterSnapshotCapture(&vram_snapshots[current ^ 1], source, !SM_RASTER_FULL_COPY);
+      ok = line->vram != NULL;
+    }
   }
+  free(source);
+  if (ok) ok = fread((unsigned char *)next + offsetof(SmSourceFrame, ram),
+      SM_CAPTURE_TAIL_BYTES, 1, file) == 1 &&
+      *((const unsigned char *)next + offsetof(SmSourceFrame, valid)) == 1 &&
+      *((const unsigned char *)next + offsetof(SmSourceFrame, object_state_valid)) <= 1 &&
+      next->captured == 224 && fgetc(file) == EOF;
+  fclose(file);
+  capture_failed[current ^ 1] = !ok;
   if (ok) current ^= 1;
   else next->valid = false;
   return ok;
@@ -260,6 +326,8 @@ static bool has_samus_motion(const SmSourceFrame *f, const SmSourceFrame *old) {
 }
 void SmRendererReset(void) {
   memset(frames, 0, sizeof(frames));
+  hardware_raster.tracking=false;
+  capture_failed[0] = capture_failed[1] = false;
   current = 0;
   captured_mode7 = false;
   captured_mosaic = false;
@@ -274,10 +342,12 @@ void SmRendererReset(void) {
   object_state_latched = false;
 }
 void SmRendererBeginFrame(const uint8_t ram[0x20000], unsigned number) {
+  hardware_raster.tracking=false;
   current ^= 1;
   SmSourceFrame *f = &frames[current];
   f->valid = false;
   f->captured = 0;
+  capture_failed[current] = !SnesRasterSnapshotBegin(&vram_snapshots[current], 0x10000, 224);
   f->number = number;
   memcpy(f->ram, ram, sizeof(f->ram));
   memcpy(f->object_ram, object_state_latched ? latched_object_ram : ram, sizeof(f->object_ram));
@@ -286,8 +356,22 @@ void SmRendererBeginFrame(const uint8_t ram[0x20000], unsigned number) {
   f->object_state_valid = object_state_latched;
   object_state_latched = false;
 }
+void SmRendererBeginHardwareRaster(const Ppu *p) {
+  hardware_raster.tracking=false;
+#if SM_RASTER_TRACK_WRITES && !SNESRECOMP_TRACE
+  if(p) {
+    hardware_raster.ppu=p;hardware_raster.writes=p->vramWriteCount;
+    hardware_raster.uncertain=true;
+    hardware_raster.tracking=!p->widescreenLineEnhancer;
+  }
+#else
+  (void)p;
+#endif
+}
+void SmRendererEndHardwareRaster(void) { hardware_raster.tracking=false; }
+void SmRendererHardwareVramChanged(void) { hardware_raster.uncertain=true; }
 void SmRendererCaptureLine(const Ppu *p, unsigned line) {
-  if (!p || line < 1 || line > 224) return;
+  if (!p || capture_failed[current] || line < 1 || line > 224) return;
   SmSourceFrame *f = &frames[current];
   if (line != f->captured + 1) return;
   SmRasterLine *l = &f->lines[line - 1];
@@ -295,12 +379,23 @@ void SmRendererCaptureLine(const Ppu *p, unsigned line) {
   memcpy(l->palette, p->cgram, sizeof(l->palette));
   memcpy(l->oam, p->oam, sizeof(l->oam));
   memcpy(l->high_oam, p->highOam, sizeof(l->high_oam));
-  memcpy(l->vram, p->vram, sizeof(l->vram));
+#if SM_RASTER_TRACK_WRITES
+  if(p!=hardware_raster.ppu || p->widescreenLineEnhancer)hardware_raster.tracking=false;
+  if(!SM_RASTER_FULL_COPY && hardware_raster.tracking && !hardware_raster.uncertain &&
+      f->captured && hardware_raster.writes==p->vramWriteCount)
+    l->vram=vram_snapshots[current].images[vram_snapshots[current].count-1];
+  else
+#endif
+    l->vram = SnesRasterSnapshotCapture(&vram_snapshots[current], p->vram, !SM_RASTER_FULL_COPY);
+#if SM_RASTER_TRACK_WRITES
+  hardware_raster.writes=p->vramWriteCount;hardware_raster.uncertain=false;
+#endif
+  if (!l->vram) { capture_failed[current] = true; return; }
   ++f->captured;
 }
 bool SmRendererEndFrame(const uint32_t stock[256 * 224]) {
   SmSourceFrame *f = &frames[current];
-  if (!stock || f->captured != 224) return false;
+  if (!stock || capture_failed[current] || f->captured != 224) return false;
   memcpy(f->stock, stock, sizeof(f->stock));
   f->valid = true;
   const char *motion_prefix = getenv("SM_CAPTURE_MOTION_PREFIX");

@@ -554,6 +554,7 @@ void SmDrawPpuFrame(void) {
                          g_snes->vIrqEnabled ? 1 : 0, g_snes->vTimer,
                          g_snes->hIrqEnabled ? 1 : 0, probe_armed);
 
+  SmRendererBeginHardwareRaster(g_ppu);
   for (int i = 0; i <= 224; i++) {
     /* HDMA runs during the H-blank preceding each visible scanline. The
      * raster IRQ then selects the register set used for that line (the
@@ -563,6 +564,7 @@ void SmDrawPpuFrame(void) {
     for (int ch = 0; ch < 8; ch++)
       SimpleHdma_DoLine(&hdma_chans[ch]);
     if (i == trigger) {
+      SmRendererHardwareVramChanged();
       g_snes->inIrq = true;
       cpu_push_interrupt_frame(&g_cpu);
       I_IRQ(&g_cpu);
@@ -580,6 +582,7 @@ void SmDrawPpuFrame(void) {
     }
     ppu_runLine(g_ppu, i);
   }
+  SmRendererEndHardwareRaster();
   if (probe) {
     /* The frame's whole raster shape in one line: which registers the HUD/room
      * split left behind, the HDMA mask the presentation pass armed from, and
