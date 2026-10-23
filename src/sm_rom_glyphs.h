@@ -29,3 +29,16 @@ void SmRomGlyphDraw(uint32_t *dst, int stride, int width, int height,
 void SmRomPauseFrameDraw(uint32_t *dst, int stride, int width, int height,
                          int x, int y, int w, int h,
                          int gap_col, int gap_tiles);
+
+/* Draw the guest's pause-screen HUD from its BG3 tilemap (32 columns x 3 rows;
+ * `cells` points at the guest copy in WRAM). The Map and Equipment pause
+ * screens show this same HUD along the top edge. BG3 is 2bpp in Mode 1, so
+ * tile graphics are the cartridge's 16-byte HUD BG tileset at $9A:$B200 and
+ * colours are the pause palette set at $B6:$F000, both read in place at render
+ * time. Tilemap entries supply the tile index, palette (four CGRAM entries at
+ * palette*4), priority (ignored here; the panel has one layer), and h/v flips;
+ * tone 0 is transparent.
+ * dst/stride/width/height: output framebuffer (ARGB8888) and dimensions.
+ * x,y: top-left destination position. cols/rows: tilemap dimensions. */
+void SmRomHudDraw(uint32_t *dst, int stride, int width, int height,
+                  int x, int y, const uint16_t *cells, int cols, int rows);

@@ -354,14 +354,12 @@ void SmPauseOptions_GuestTick(void) {
 
 /* Panel colours (ARGB8888). */
 #define COL_BG     0xFF0A0E18u
-#define COL_BORDER 0xFF3A4A6Au
 #define COL_TITLE  0xFFFFFFFFu
 #define COL_TEXT   0xFFC2CCE0u
 #define COL_SELBG  0xFF2B4A8Cu
 #define COL_SEL    0xFFFFFFFFu
 #define COL_DIM    0xFF8A98B4u
 #define COL_ACCENT 0xFF6BE06Bu
-#define COL_TABON  0xFFFFD24Du
 
 static int TextLen(const char *s) { return (int)strlen(s); }
 
@@ -428,17 +426,12 @@ static void DrawPanel(uint32_t *dst, int stride, int width, int height) {
     snes_ovl_fill_rect(dst, stride, height, extra + game_width, 0, width - extra - game_width, height, 0xFF000000u);
   }
 
-  /* Tab strip: MAP / EQUIP / OPTIONS, with the current tab lit. */
-  {
-    int y = 10;
-    SmRomGlyphDraw(dst, stride, width, height, extra + 18, y, "MAP", COL_DIM, 1);
-    SmRomGlyphDraw(dst, stride, width, height, extra + 18 + 4 * 8, y, "EQUIP", COL_DIM, 1);
-    int ox = extra + 18 + (4 + 6) * 8;
-    snes_ovl_fill_rect(dst, stride, height, ox - 3, y - 3, 8 * 8 + 6, 14, COL_SELBG);
-    SmRomGlyphDraw(dst, stride, width, height, ox, y, "OPTIONS", COL_TABON, 1);
-  }
-
-  snes_ovl_fill_rect(dst, stride, height, extra + 10, 24, game_width - 20, 1, COL_BORDER);
+  /* Top edge: the guest's own HUD, exactly what the Map and Equipment pause
+   * screens show there. The tilemap at g_ram+0xC608 is the guest's BG3 copy,
+   * kept current by HandleHudTilemap while paused; its tiles and palettes are
+   * read from the cartridge in place. */
+  SmRomHudDraw(dst, stride, width, height, extra, 0,
+               (const uint16_t *)(g_ram + 0xC608), 32, 3);
 
   /* The window itself: the pause screen's BG2 frame at its native 256x160
    * footprint (rows 5..24 of the ROM tilemap), with the 12-tile label gap in

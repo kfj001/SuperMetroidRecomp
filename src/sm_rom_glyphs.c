@@ -31,9 +31,11 @@
 enum {
   kFontTileBase = 0xC000,   /* $B6:C000 */
   kFrameTileBase = 0x8000,  /* $B6:8000, the pause screen's BG2 tileset */
-  kPausePaletteBase = 0xF000, /* $B6:F000, all eight pause palettes */
+  kHudTileBase = 0xB200,    /* $9A:B200, the HUD tileset loaded to VRAM 0x8000 */
+  kPausePaletteBase = 0xF000, /* $B6:F000, the full 512-byte pause palette set */
   kFramePalette = 2,        /* the tilemap's frame entries use palette 2 */
   kFontTileBytes = 32,      /* 4bpp: 8 words planes 0/1 + 8 words planes 2/3 */
+  kHudTileBytes = 16,       /* 2bpp (BG3 in Mode 1): 8 words, one per row */
   kFontFirstLetter = 0x6a,  /* 'A' */
   kFontFirstDigit = 0x60,   /* '0' */
 };
@@ -47,23 +49,27 @@ static int CharTile(unsigned ch) {
   return -1;
 }
 
-/* Read one 4bpp pixel (0..15) from a cartridge tile at `base`. */
-static unsigned RomTilePixelAt(unsigned base, unsigned tile, unsigned x,
-                               unsigned y) {
-  const unsigned addr = base + tile * kFontTileBytes + y * 2u;
-  const unsigned w0 = SmRomByte(0xB6, addr) |
-                      ((unsigned)SmRomByte(0xB6, addr + 1u) << 8);
-  const unsigned w1 = SmRomByte(0xB6, addr + 16u) |
-                      ((unsigned)SmRomByte(0xB6, addr + 17u) << 8);
+/* Read one pixel (0..2 for 2bpp, 0..15 for 4bpp) from a cartridge tile at
+ * `base` in `bank`. 4bpp tiles are 32 bytes (two 8-row planes); 2bpp tiles
+ * are 16 bytes (one word per row). */
+static unsigned RomTilePixelAt(unsigned bank, unsigned base, unsigned tile,
+                               unsigned x, unsigned y, unsigned bpp) {
+  const unsigned tile_bytes = bpp == 2 ? kHudTileBytes : kFontTileBytes;
+  const unsigned addr = base + tile * tile_bytes + y * 2u;
+  const unsigned w0 = SmRomByte(bank, addr) |
+                      ((unsigned)SmRomByte(bank, addr + 1u) << 8);
   const unsigned bit = 7u - x;
-  return ((w0 >> bit) & 1u) |
-         (((w0 >> (bit + 8u)) & 1u) << 1) |
-         (((w1 >> bit) & 1u) << 2) |
-         (((w1 >> (bit + 8u)) & 1u) << 3);
+  unsigned tone = ((w0 >> bit) & 1u) | (((w0 >> (bit + 8u)) & 1u) << 1);
+  if (bpp > 2) {
+    const unsigned w1 = SmRomByte(bank, addr + 16u) |
+                        ((unsigned)SmRomByte(bank, addr + 17u) << 8);
+    tone |= (((w1 >> bit) & 1u) << 2) | (((w1 >> (bit + 8u)) & 1u) << 3);
+  }
+  return tone;
 }
 
 static unsigned RomTilePixel(unsigned tile, unsigned x, unsigned y) {
-  return RomTilePixelAt(kFontTileBase, tile, x, y);
+  return RomTilePixelAt(0xB6, kFontTileBase, tile, x, y, 4);
 }
 
 /* Host-only '<' / '>' chevrons, one bit per pixel, MSB = leftmost. */
@@ -180,9 +186,11 @@ static uint32_t SnesToArgb(unsigned c) {
 }
 
 /* Draw one 8x8 cartridge tile with optional flips. Tone 0 is transparent;
- * every other tone is looked up in the already-resolved palette. */
+ * every other tone indexes `pal`, which points at the start of the entry's
+ * palette (16 colours for 4bpp, 4 for 2bpp). */
 static void DrawRomTile(uint32_t *dst, int stride, int width, int height,
-                        int x, int y, unsigned tile, const uint32_t pal[16],
+                        int x, int y, unsigned bank, unsigned base,
+                        unsigned tile, unsigned bpp, const uint32_t *pal,
                         int hflip, int vflip) {
   for (int row = 0; row < 8; ++row) {
     const int py = y + row;
@@ -193,11 +201,19 @@ static void DrawRomTile(uint32_t *dst, int stride, int width, int height,
       if (px < 0 || px >= width) continue;
       const int sx = hflip ? 7 - col : col;
       const unsigned tone =
-          RomTilePixelAt(kFrameTileBase, tile, (unsigned)sx, (unsigned)sy);
+          RomTilePixelAt(bank, base, tile, (unsigned)sx, (unsigned)sy, bpp);
       if (!tone) continue;
       dst[py * stride + px] = pal[tone];
     }
   }
+}
+
+/* Resolve the whole 512-byte pause palette set at $B6:F000 into a flat
+ * 256-entry CGRAM image. 4bpp lookups use palette*16 + tone, 2bpp lookups use
+ * palette*4 + tone. No palette data is copied out of the cartridge. */
+static void LoadRomCgram(uint32_t out[256]) {
+  for (unsigned i = 0; i < 256; ++i)
+    out[i] = SnesToArgb(RomWord(0xB6, kPausePaletteBase + i * 2u));
 }
 
 void SmRomPauseFrameDraw(uint32_t *dst, int stride, int width, int height,
@@ -209,11 +225,9 @@ void SmRomPauseFrameDraw(uint32_t *dst, int stride, int width, int height,
   if (cols < 3 || rows < 3) return;
   if (gap_tiles < 0) gap_tiles = 0;
 
-  uint32_t pal[16];
-  const unsigned base =
-      kPausePaletteBase + (unsigned)kFramePalette * 16u * 2u;
-  for (unsigned i = 0; i < 16; ++i)
-    pal[i] = SnesToArgb(RomWord(0xB6, base + i * 2u));
+  uint32_t cgram[256];
+  LoadRomCgram(cgram);
+  const uint32_t *pal = cgram + kFramePalette * 16;
 
   /* Top edge: corners, bars, an optional label gap capped with 0xbd. */
   for (int c = 0; c < cols; ++c) {
@@ -234,21 +248,53 @@ void SmRomPauseFrameDraw(uint32_t *dst, int stride, int width, int height,
     } else {
       tile = 0xbe;
     }
-    DrawRomTile(dst, stride, width, height, x + c * 8, y, tile, pal, hflip, 0);
+    DrawRomTile(dst, stride, width, height, x + c * 8, y, 0xB6,
+                kFrameTileBase, tile, 4, pal, hflip, 0);
   }
 
   /* Bottom edge: continuous bars, corners flipped vertically. */
   for (int c = 0; c < cols; ++c) {
     unsigned tile = (c == 0 || c == cols - 1) ? 0xbf : 0xbe;
     int hflip = (c == 0);
-    DrawRomTile(dst, stride, width, height, x + c * 8, y + (rows - 1) * 8,
-                tile, pal, hflip, 1);
+    DrawRomTile(dst, stride, width, height, x + c * 8, y + (rows - 1) * 8, 0xB6,
+                kFrameTileBase, tile, 4, pal, hflip, 1);
   }
 
   /* Sides: 0xcf is asymmetric, so the left side is mirrored. */
   for (int r = 1; r < rows - 1; ++r) {
-    DrawRomTile(dst, stride, width, height, x, y + r * 8, 0xcf, pal, 1, 0);
-    DrawRomTile(dst, stride, width, height, x + (cols - 1) * 8, y + r * 8,
-                0xcf, pal, 0, 0);
+    DrawRomTile(dst, stride, width, height, x, y + r * 8, 0xB6,
+                kFrameTileBase, 0xcf, 4, pal, 1, 0);
+    DrawRomTile(dst, stride, width, height, x + (cols - 1) * 8, y + r * 8, 0xB6,
+                kFrameTileBase, 0xcf, 4, pal, 0, 0);
+  }
+}
+
+/* ── guest HUD ─────────────────────────────────────────────────────────
+ *
+ * The Map and Equipment pause screens leave the gameplay HUD up along the top
+ * edge. It is BG3: a 32x3 tilemap at VRAM word 0x5800, whose tile graphics
+ * (digits, tanks, weapon icons, its dark backdrop tile) are the 0x2000 bytes
+ * the pause loader DMAs from $9A:B200 to VRAM 0x8000 (BG34NBA = 4). BGMODE 9
+ * is Mode 1, so BG3 is 2bpp: 16 bytes per tile and four CGRAM entries per
+ * palette. Entries there select one of the pause palettes at $B6:F000, so both
+ * are read in place here. The guest updates the tilemap itself
+ * (HandleHudTilemap), so drawing the guest copy keeps energy/missile/bomb
+ * counts live without this panel recomputing them. */
+void SmRomHudDraw(uint32_t *dst, int stride, int width, int height,
+                  int x, int y, const uint16_t *cells, int cols, int rows) {
+  if (!dst || !cells || stride <= 0 || cols <= 0 || rows <= 0) return;
+  uint32_t cgram[256];
+  LoadRomCgram(cgram);
+  for (int r = 0; r < rows; ++r) {
+    for (int c = 0; c < cols; ++c) {
+      const uint16_t entry = cells[r * cols + c];
+      const unsigned tile = entry & 0x3FFu;
+      const unsigned palette = (entry >> 10) & 7u;
+      const int hflip = (entry >> 14) & 1;
+      const int vflip = (entry >> 15) & 1;
+      /* BG3 is 2bpp in Mode 1, so each palette is four CGRAM entries. */
+      DrawRomTile(dst, stride, width, height, x + c * 8, y + r * 8, 0x9A,
+                  kHudTileBase, tile, 2, cgram + palette * 4, hflip, vflip);
+    }
   }
 }

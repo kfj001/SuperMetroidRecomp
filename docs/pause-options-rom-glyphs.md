@@ -2,14 +2,17 @@
 
 The pause menu's Options tab is a host overlay (see `sm_pause_options.h`), not a
 recompiled screen. M1 gave it the panel model, geometry, SFX and fades. M2 makes
-its text real Super Metroid text: the tab strip, title and footer now draw the
+its text real Super Metroid text: the title and footer now draw the
 cartridge's 8x8 small font, read from ROM in place, instead of the framework's
-outline font. M2 also gives the panel the cartridge's own window frame: the
-same BG2 edge tiles the Map and Equipment pause screens use.
+outline font. M2 also gives the panel the cartridge's own window frame (the
+same BG2 edge tiles the Map and Equipment pause screens use) and the guest HUD
+those screens keep along the top edge, so the Options tab reads as a third pause
+screen rather than a separate host menu.
 
-Nothing under `src/gen/` changed, no ROM patch was made, and no glyph or
+Nothing under `src/gen/` changed, no ROM patch was made, and no glyph, tile or
 palette asset was copied out of the cartridge. The only new pixel data in the
-repository is the synthetic font the unit test generates for itself.
+repository is the synthetic font, frame and HUD patterns the unit test
+generates for itself.
 
 ## What is drawn
 
@@ -27,10 +30,10 @@ Every other character advances blank. The overlay's strings only need the
 first five rows of that table.
 
 Only the panel chrome that mirrors the game's own small text uses the ROM
-font: the MAP / EQUIP / OPTIONS tab strip, the GAME OPTIONS title and the
-`L < > R MOVE TABS` / `START EXIT` footer. The dynamic settings rows (row
-labels and values supplied by the framework) stay on the host font: they are
-host vocabulary, mixed case, and not ROM strings.
+font: the GAME OPTIONS title and the `L < > R MOVE TABS` / `START EXIT` footer.
+The dynamic settings rows (row labels and values supplied by the framework)
+stay on the host font: they are host vocabulary, mixed case, and not ROM
+strings.
 
 ### Font location and layout
 
@@ -69,6 +72,36 @@ option), not the small font. The small font is uppercase only.
 
 The only non-ROM glyph shapes in the overlay are the `<` / `>` navigation
 chevrons. They are generated in `sm_rom_glyphs.c`, not extracted from the ROM.
+
+### Guest HUD
+
+The Map and Equipment pause screens keep the gameplay HUD along the top edge.
+The Options panel draws the same thing rather than a host-drawn tab strip: the
+guest's BG3 tilemap at **`g_ram + 0xC608`** (VRAM word `0x5800`), 32x3 cells.
+`HandleHudTilemap` keeps that copy current while paused, so energy, missiles,
+reserves and weapon counts stay live without the panel recomputing them.
+
+The HUD tiles are the 0x2000 bytes the pause loader DMAs from **`$9A:$B200`**
+(ROM offset **`0xD3200`**) to VRAM byte `0x8000` (word `0x4000`, the BG3 tile
+base selected by `BG34NBA = 4`). `BGMODE 9` is Mode 1, so **BG3 is 2bpp**:
+16 bytes per tile, one word per row, planes 0/1:
+
+```
+p = ((row >> (7-x)) & 1) | (((row >> (8+(7-x))) & 1) << 1)
+```
+
+Tilemap entries decode as tile `entry & 0x3ff`, palette `(entry >> 10) & 7`,
+priority `(entry >> 13) & 1` (ignored: the panel has one layer), hflip
+`(entry >> 14) & 1` and vflip `(entry >> 15) & 1`. Tone 0 is transparent. A
+2bpp palette is four CGRAM entries at `palette*4`:
+
+* palette 3 (CGRAM 12-15): backdrop and digits;
+* palette 5 (CGRAM 20-23): energy tanks and weapon icons.
+
+The backdrop tile (`0x0f`) is solid tone 3, which palette 3 maps to black, so
+the HUD paints its own opaque band over the panel background; the panel does
+not add a host rectangle behind it. Every HUD byte (tile data, tilemap and
+palette) is read in place at render time; nothing is extracted.
 
 ### Pause-window frame
 
@@ -110,6 +143,14 @@ panel's background is host-owned.
 The font layout was derived statically from the decompiled loaders
 (`LoadPauseScreenBaseTilemaps`, the file-select text paths) and the ROM, then
 checked against captured VRAM. The captures are a verification oracle only.
+
+The HUD layout comes from the same decompiled pause path: `BGMODE 9` makes BG3
+2bpp, the pause loader DMAs `$9A:B200` to word `0x4000`, and `BG3SC = 0x58`
+puts the tilemap at word `0x5800`, matching the guest copy at `g_ram+0xC608`.
+The published HUD palette layout (palette 0 entries 8-15, palette 1 entries
+4-7) confirms that the 2bpp palettes select CGRAM `palette*4` and that palette
+3 holds the black backdrop and digit colours while palette 5 holds the tank and
+weapon-icon colours.
 
 * `A-Z = tiles 0x6a..0x83` was confirmed byte-for-byte: the 32-byte tiles in
   captured VRAM equal the ROM bytes, and the tilemap cells spell the expected
@@ -211,8 +252,14 @@ runtime capture work.
 generates the four frame tiles (`0xbd/0xbe/0xbf/0xcf` at offset `0`) and
 palette 2 (at offset `0x7000 + 64`), so the frame's tile decode, flips and
 palette lookup are covered by the goldens rather than silently transparent.
-The patterns are generated, not extracted, and differ per tile so a wrong
-char -> tile map, flip or plane/row mix-up changes the golden hash.
+A synthetic `$9A` window provides all 512 HUD tiles at 16-byte 2bpp stride
+(offset `0x3200`), and the full 16x16-entry palette set at `$B6:F000` covers
+both the frame's 16-colour palette and the HUD's 4-colour palettes. The test
+also seeds the guest BG3 tilemap (`g_ram+0xC608`) with a backdrop, energy
+tanks, digits, weapon counts and flipped cells, and asserts that the HUD band
+paints pixels above `y=24` and stops there. The patterns are generated, not
+extracted, and differ per tile so a wrong char -> tile map, HUD tile stride,
+flip or plane/row mix-up changes the golden hash.
 
 The panel's state model was also corrected for the no-pin design: while the
 guest is paused it stays open on whichever pause screen it is on (Map or
@@ -248,12 +295,12 @@ Current result: all 10 CTest tests pass, including `sm_pause_options`.
 
 ## Files
 
-* `src/sm_rom_glyphs.c` / `.h` - 4bpp decode, char -> tile map, chevrons,
-  pause-window 9-slice and palette-2 expansion.
-* `src/sm_pause_options.c` - calls the renderer; frame layout; stay-open model;
-  `COL_BG` background; dead `RomCol` colour-decoder removed (its CGRAM channel
-  order was inverted, and the panel uses fixed ARGB colours).
+* `src/sm_rom_glyphs.c` / `.h` - 4bpp font/frame decode, 2bpp HUD decode,
+  char -> tile map, chevrons, pause-window 9-slice, flat pause CGRAM.
+* `src/sm_pause_options.c` - calls the renderer; HUD band, frame layout;
+  stay-open model; `COL_BG` background.
 * `tests/sm_pause_options_test.c` - synthetic 4bpp font and frame tiles,
-  no-pin expectations, 26 recalibrated hashes.
+  synthetic 2bpp HUD tiles and tilemap, no-pin expectations, 26 recalibrated
+  hashes.
 * `CMakeLists.txt` - builds `sm_rom_glyphs.c` into the test and the
   `PAUSE_OPTIONS_TEST_CALIBRATE` switch.
