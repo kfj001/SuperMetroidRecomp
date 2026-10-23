@@ -11,6 +11,11 @@ project(SuperMetroidSNESRecomp VERSION 0.3.13 LANGUAGES C)
 #   - SDL2 + OpenGL
 
 set(CMAKE_C_STANDARD 11)
+option(SM_RASTER_FULL_COPY "Use full-copy VRAM raster storage as the reference" OFF)
+option(SM_RASTER_TRACK_WRITES "Track VRAM writes for title-owned capture intervals" ON)
+add_compile_definitions(SM_RASTER_TRACK_WRITES=$<BOOL:${SM_RASTER_TRACK_WRITES}>)
+set_property(SOURCE src/sm_renderer.c APPEND PROPERTY COMPILE_DEFINITIONS
+    SM_RASTER_FULL_COPY=$<BOOL:${SM_RASTER_FULL_COPY}>)
 
 # CACHE PATH, so -DSNESRECOMP_ROOT=<engine checkout> works -- the framework
 # README documents that flag as the way to build a game against an engine
@@ -53,6 +58,7 @@ list(APPEND SNESRECOMP_RUNNER_INCLUDE_DIRS ${SNESRECOMP_ROOT}/runner/src/desktop
 # roots through the owning helper, or directly for focused tests/tools that
 # compile only that layer.
 if(BUILD_TESTING AND NOT ANDROID)
+    add_subdirectory(${SNESRECOMP_ROOT}/runner/tests/raster_snapshot raster-snapshot-tests)
     add_executable(sm_display_test tests/sm_display_test.c src/sm_display.c)
     target_include_directories(sm_display_test PRIVATE
         src
@@ -126,6 +132,23 @@ if(BUILD_TESTING AND NOT ANDROID)
         src ${SNESRECOMP_RUNNER_INCLUDE_DIRS})
     add_test(NAME sm_custom_renderer
         COMMAND sm_renderer_test ${CMAKE_CURRENT_BINARY_DIR}/sm-renderer-test.capture)
+    target_compile_definitions(sm_renderer_test PRIVATE
+        SM_RASTER_FULL_COPY=$<BOOL:${SM_RASTER_FULL_COPY}>)
+    add_executable(sm_renderer_fullcopy_test tests/sm_renderer_test.c
+        tests/sm_renderer_variant.c src/sm_mode7.c)
+    target_include_directories(sm_renderer_fullcopy_test PRIVATE
+        src ${SNESRECOMP_RUNNER_INCLUDE_DIRS})
+    target_compile_definitions(sm_renderer_fullcopy_test PRIVATE SM_RASTER_FULL_COPY=1)
+    if(MSVC)
+        target_compile_options(sm_renderer_fullcopy_test PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(sm_renderer_fullcopy_test PRIVATE -UNDEBUG)
+    endif()
+    if(NOT WIN32)
+        target_link_libraries(sm_renderer_fullcopy_test PRIVATE m)
+    endif()
+    add_test(NAME sm_custom_renderer_fullcopy COMMAND sm_renderer_fullcopy_test
+        ${CMAKE_CURRENT_BINARY_DIR}/sm-renderer-fullcopy-test.capture)
     add_executable(sm_mode7_test tests/sm_mode7_test.c src/sm_mode7.c)
     target_include_directories(sm_mode7_test PRIVATE src)
     add_test(NAME sm_custom_mode7 COMMAND sm_mode7_test)

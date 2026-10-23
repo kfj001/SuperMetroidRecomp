@@ -30,7 +30,69 @@ static void BeginFixtureFrame(const uint8_t *state, unsigned number) {
   SmRendererBeginFrame(state, number); fixture_owner_latched = false;
 }
 
+#ifndef SM_RASTER_FULL_COPY
+#define SM_RASTER_FULL_COPY 0
+#endif
+static void unexpected_capture_callback(Ppu *p,uint y,bool sub,void *context) {
+  (void)p;(void)y;(void)sub;(void)context;assert(false);
+}
+static void raster_storage(void) {
+  ResetFixtureRenderer();SmRendererSetRom(NULL,0);
+  memset(ram,0,sizeof(ram));memset(&ppu,0,sizeof(ppu));
+  word(0x998,8);ppu.inidisp=15;ppu.bgmode=1;ppu.screenEnabled[0]=1;
+  ppu.bgTileAdr=2;ppu.cgram[1]=31;ppu.cgram[2]=31<<5;ppu.cgram[3]=31<<10;
+  for(unsigned row=0;row<8;++row)ppu.vram[0x2000+row]=0xff;
+  BeginFixtureFrame(ram,100);
+  for(unsigned line=1;line<=224;++line) {
+    if(line==65 || line==129)
+      for(unsigned row=0;row<8;++row)ppu.vram[0x2000+row]=line==65?0xff00:0xff;
+    if(line==193)ppu.vram[0x7fff]=1;
+    SmRendererCaptureLine(&ppu,line);
+  }
+  assert(SmRendererEndFrame(stock));
+  SmRasterStats storage=SmRendererGetRasterStats();
+  assert(storage.vram_images==(SM_RASTER_FULL_COPY?224u:4u));
+  assert(storage.vram_copied_bytes==(uint64_t)storage.vram_images*65536);
+  memset(ppu.vram,0,sizeof(ppu.vram));
+  SmViewport view={342,43,16.0/9,true};
+  for(unsigned draw=0;draw<3;++draw) {
+    assert(SmRendererDraw(output,view,false,1));
+    for(unsigned y=0;y<224;++y)
+      assert(output[y*view.width+view.extra+128]==
+          (y>=64 && y<128?0x00ff00u:0xff0000u));
+  }
+  for(unsigned row=0;row<8;++row)ppu.vram[0x2000+row]=0xffff;
+  BeginFixtureFrame(ram,101);
+  SmRendererBeginHardwareRaster(&ppu);
+  for(unsigned line=1;line<=224;++line) {
+    if(line==65) { ppu.vram[0x7fff]=2;++ppu.vramWriteCount; }
+    if(line==129) { ppu.vram[0x7fff]=3;SmRendererHardwareVramChanged(); }
+    if(line==193)ppu.widescreenLineEnhancer=unexpected_capture_callback;
+    if(line==194) { ppu.widescreenLineEnhancer=NULL;ppu.vram[0x7fff]=4; }
+    SmRendererCaptureLine(&ppu,line);
+  }
+  SmRendererEndHardwareRaster();
+  assert(SmRendererEndFrame(stock));storage=SmRendererGetRasterStats();
+  assert(storage.vram_images==(SM_RASTER_FULL_COPY?224u:4u));
+  assert(storage.vram_capacity_bytes==(uint64_t)(SM_RASTER_FULL_COPY?448u:8u)*65536);
+  if(!SM_RASTER_FULL_COPY)assert(storage.vram_compared_bytes==
+#if SM_RASTER_TRACK_WRITES && !SNESRECOMP_TRACE
+      34u*65536);
+#else
+      223u*65536);
+#endif
+  memset(ppu.vram,0,sizeof(ppu.vram));
+  assert(SmRendererDraw(output,view,false,1));
+  for(unsigned y=0;y<224;++y)assert(output[y*view.width+view.extra+128]==0x0000ff);
+  BeginFixtureFrame(ram,102);
+  for(unsigned line=1;line<=224;++line)SmRendererCaptureLine(&ppu,line);
+  assert(SmRendererEndFrame(stock));
+  assert(SmRendererGetRasterStats().vram_capacity_bytes==storage.vram_capacity_bytes);
+  ResetFixtureRenderer();memset(ram,0,sizeof(ram));memset(&ppu,0,sizeof(ppu));
+}
+
 int main(int argc, char **argv) {
+  raster_storage();
   /* Reveal substitutions, row-major multi-block writes, linked BTS blocks,
    * item collection and room-state overrides, all without guest execution. */
   static uint16_t revealed[0x3200];
@@ -437,6 +499,18 @@ int main(int argc, char **argv) {
     assert(SmRendererLoadCapture(argv[1]));
     assert(SmRendererDraw(output, view, true, 1));
     assert(output[70 * view.width + view.extra + 310] == 0x0000ff);
+    /* A partial load may overwrite the spare store, but must never corrupt
+     * the current frame. Change the first record's CHR before truncating. */
+    const size_t prefix_bytes=12+PPU_SAVESTATE_REGS_SIZE+1056+65536+128;
+    uint8_t *prefix=malloc(prefix_bytes);assert(prefix);
+    FILE *partial=fopen(argv[1],"rb");assert(partial);
+    assert(fread(prefix,prefix_bytes,1,partial)==1);fclose(partial);
+    memset(prefix+12+PPU_SAVESTATE_REGS_SIZE+1024,0,65536);
+    partial=fopen(argv[1],"wb");assert(partial);
+    assert(fwrite(prefix,prefix_bytes,1,partial)==1);fclose(partial);free(prefix);
+    assert(!SmRendererLoadCapture(argv[1]));
+    assert(SmRendererDraw(output,view,true,1));
+    assert(output[70*view.width+view.extra+310]==0x0000ff);
     FILE *file = fopen(argv[1], "wb");
     assert(file);
     assert(fwrite("bad", 3, 1, file) == 1);

@@ -1003,6 +1003,35 @@ scripts, `DisableFrameDelay=1`, SDL software presentation and dummy audio/video
 drivers; audio emulation remains enabled. The owner approved final play
 validation and authorized integration and the v0.3.10 release on 2026-10-14.
 Tracking: **beads-8wg.6.11**, **beads-8wg.2.126**.
+## 2026-10-22: qualified immutable raster snapshots
+
+The custom renderer now retains exact immutable VRAM versions instead of 224
+inline copies per source frame. Its two frame stores keep independent lifetime
+for interpolation. Registers, palette and OAM remain per-line, the stock
+fallback remains, and the v2 diagnostic file layout streams values rather
+than host pointers. Full-copy and byte-comparison builds remain available.
+Current-main integration uses the existing host-only PPU write counter; trusted
+hardware intervals still compare first/uncertain lines and callbacks.
+
+Qualification on base `fe37c5f` / engine `bb37c87`: all 11 CTests, byte-compare
+and trace variants; 3200-frame stock/wide/120Hz simulation invariance (6424
+presentations); nine exact original/candidate fixed-source artifacts; and
+11000-frame Ceres stock/wide traces plus nine exact fixed-alpha Mode-7 BMP
+pairs. The production Fit package also matches original gameplay pixels,
+source capture and all 3200 simulation trace rows with rewind enabled.
+The original and candidate both log the existing `$88D865` dispatch warning;
+that dispatch is not newly qualified as correct by this optimization work.
+
+Three balanced older-i5-4670 pairs per aspect, with audio emulation enabled,
+save median CPU time of 23.01% at 16:9 and 22.96% at 32:9 on the boot/attract-
+to-Landing-Site route. Stock 4:3 is neutral (median 0.22% more CPU). Static BSS
+is 29,356,416 bytes smaller; heap highwater varies with VRAM versions. These
+are bounded route measurements, not whole-game FPS or Xbox qualification.
+
+Owner feedback on the combined MMX/SMW/SM candidate packages: "all 3 pass."
+Qualified source revisions are being published without changing the owner's
+working tree. Current-main integration must retain its newer engine/runtime
+fixes. Central tracking: `beads-9nma`, `beads-akjp`.
 
 ## 2026-10-22: harvested coverage folded into the release (beads-8wg.6.22)
 
@@ -1069,6 +1098,7 @@ enemy AI (beads-8wg.2.148). The PLP-with-unknown-P exit-width hazard is
 beads-8wg.2.147.
 
 ## Owner-gated (do NOT do without explicit decision)
+
 Merging `investigate/sm-0012-blocker` or the multi-tier branches to main;
 releasing any game; reconciling the multi-tier branches; editing `src/gen/`.
 # 2026-10-22: automatic diagnostic sessions and gameplay replay
@@ -1124,3 +1154,48 @@ and fireball-rain ($D788) phases. The acceptance harness now offers
 check that gameplay continues, and replay the entire recorded attack.
 The checkpoint bypasses room traversal; no AI phase, damage or success flags
 are injected. This check does not establish boss victory.
+
+## 2026-10-22: current-main raster optimization qualification
+
+Reapplied the human-approved optimization to main `b4bedbd`, retaining the
+Phantoon dispatch and HDMA fixes, widened bounds and diagnostic replay work.
+Engine pin `7b8cc25` adds only the shared snapshot helper to the current title
+pin; the helper also landed in snesrecomp PR #209. The scoped shortcut reuses
+the existing `Ppu.vramWriteCount`, without another PPU counter or layout change.
+First/uncertain captures, direct calls, callbacks and trace builds retain
+exact comparisons. Full-copy and untracked comparison options remain available.
+
+Fresh pinned-analyzer regeneration passed strict idempotence: 123 banks,
+14446 exact AOT functions, 10945 LLE entries and 338 translation units. The
+Release build and all 14 CTests passed. Current-main full-copy/optimized
+stock, widescreen and 120 Hz runs match all 3200 simulation trace rows and
+nine fixed source/trace/BMP artifacts. Live interpolated FPS images are not
+asserted equal across independent host-time runs. Production Mods Fit with
+default sprite behavior and rewind matches 3200 trace rows and the final
+source capture and image.
+
+Audio-enabled Ceres stock/wide runs each cover 11000 simulations and match
+their traces and guest-produced changing Mode 7 captures. Offline rendering
+matches at alpha 0, 0.5 and 1 across 4:3, 16:9 and 32:9 (nine BMP pairs).
+The fixture bypasses escape prerequisites and positions the player; it does
+not establish a natural boss victory or escape completion. Automated audio
+emulation uses a dummy output device. Evidence is retained in the private
+`snes-bundle-20261022/current-main` qualification directories. Earlier i5-4670
+performance figures describe the human-approved older baseline, not these
+current-main correctness runs.
+
+### Requalified with harvested release coverage
+
+Main advanced to `e4caf74` (PR #30) during integration. Preserve that release
+profile and its analyzer/inline-return fixes, and apply only the shared helper
+atop its engine `c978039` as `53bc03e`; `framework_pins.txt` records the same
+pin as the gitlink. The final harvested program again regenerates identically
+twice (123 banks, 15207 exact AOT variants, 10280 LLE entries). Release and
+all 15 CTests pass. Repeated final full-copy/optimized qualification passes
+the 3200-frame stock/wide/120 Hz traces and nine fixed artifacts, actual Mods
+Fit/rewind, 11000-frame audio-enabled Ceres stock/wide routes, and all nine
+fixed-alpha/aspect rotation images. This preserves the upstream gameplay
+coverage work without downgrading it to the earlier qualification base.
+Evidence: `sm-harvest-qualified`, `sm-harvest-fit-qualified`,
+`sm-harvest-ceres-qualified` and `sm-harvest-*.log` in the private bundle's
+`current-main` directory. No new current-main performance estimate is claimed.

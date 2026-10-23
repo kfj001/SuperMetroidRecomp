@@ -8,6 +8,9 @@ void SmRendererSetRom(const uint8_t *rom, size_t size);
 void SmRendererLatchObjectState(const uint8_t ram[0x20000]);
 void SmRendererBeginFrame(const uint8_t ram[0x20000], unsigned number);
 void SmRendererCaptureLine(const Ppu *ppu, unsigned line);
+void SmRendererBeginHardwareRaster(const Ppu *ppu);
+void SmRendererEndHardwareRaster(void);
+void SmRendererHardwareVramChanged(void);
 bool SmRendererEndFrame(const uint32_t stock[256 * 224]);
 bool SmRendererDraw(uint32_t *output, SmViewport viewport, bool hud_anchored, double alpha);
 bool SmRendererRoomTile(const uint8_t ram[0x20000], int x, int y, uint16_t *entry);
@@ -48,3 +51,8 @@ typedef struct SmRendererStats {
   unsigned grapple_flare_native_matches;
 } SmRendererStats;
 SmRendererStats SmRendererGetStats(void);
+typedef struct SmRasterStats {
+  uint64_t vram_copied_bytes, vram_capacity_bytes, metadata_bytes, vram_compared_bytes;
+  unsigned vram_images;
+} SmRasterStats;
+SmRasterStats SmRendererGetRasterStats(void);
