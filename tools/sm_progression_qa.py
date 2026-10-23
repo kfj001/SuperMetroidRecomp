@@ -168,7 +168,9 @@ class Session:
         if self.sock is None:
             self.close()
             raise TimeoutError('Debug server not ready')
-        self.sock.settimeout(15)
+        # Generous: a whole-WRAM read on a loaded host can take seconds, and a
+        # timeout here abandons the session rather than reporting a guest fault.
+        self.sock.settimeout(120)
         self.stream = self.sock.makefile('rb')
         self.command('frame')
 
