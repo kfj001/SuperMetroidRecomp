@@ -472,8 +472,20 @@ static void DrawPanel(uint32_t *dst, int stride, int width, int height) {
 
   /* Bottom glyph row (L/R move tabs, START exits), just below the frame. */
   {
-    int y = height - 20;
-    SmRomGlyphDraw(dst, stride, width, height, extra + 14, y, "L < > R MOVE TABS", COL_DIM, 1);
-    SmRomGlyphDraw(dst, stride, width, height, extra + 14 + 17 * 8, y, "START EXIT", COL_ACCENT, 1);
+    int y = height - 19;
+    /* Footer bar background and framing like the native pause menu. */
+    snes_ovl_fill_rect(dst, stride, height, extra + 8, y - 6, game_width - 16, 16, 0xFF101620u);
+    snes_ovl_fill_rect(dst, stride, height, extra + 8, y - 6, game_width - 16, 1, 0xFF3A4A6Cu);
+    snes_ovl_fill_rect(dst, stride, height, extra + 8, y + 9, game_width - 16, 1, 0xFF0A1020u);
+    /* L side: stateful tab indicator showing where L/R go from Options */
+    SmRomGlyphDraw(dst, stride, width, height, extra + 14, y, "L", COL_DIM, 1);
+    SmRomGlyphDraw(dst, stride, width, height, extra + 14 + 10, y, "<", COL_DIM, 1);
+    SmRomGlyphDraw(dst, stride, width, height, extra + 14 + 18, y, "EQUIP", COL_TEXT, 1);
+    SmRomGlyphDraw(dst, stride, width, height, extra + 14 + 18 + 5 * 8 + 4, y, ">", COL_DIM, 1);
+    SmRomGlyphDraw(dst, stride, width, height, extra + 14 + 18 + 5 * 8 + 12, y, "R", COL_DIM, 1);
+    SmRomGlyphDraw(dst, stride, width, height, extra + 14 + 18 + 5 * 8 + 22, y, "MAP", COL_TEXT, 1);
+    /* R side: START / EXIT */
+    SmRomGlyphDraw(dst, stride, width, height, extra + game_width - 14 - 10 * 8, y, "START", COL_ACCENT, 1);
+    SmRomGlyphDraw(dst, stride, width, height, extra + game_width - 14 - 4 * 8, y, "EXIT", COL_ACCENT, 1);
   }
 }
