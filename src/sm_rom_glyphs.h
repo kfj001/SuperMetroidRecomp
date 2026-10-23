@@ -42,3 +42,5 @@ void SmRomPauseFrameDraw(uint32_t *dst, int stride, int width, int height,
  * x,y: top-left destination position. cols/rows: tilemap dimensions. */
 void SmRomHudDraw(uint32_t *dst, int stride, int width, int height,
                   int x, int y, const uint16_t *cells, int cols, int rows);
+void SmRomHudTopRowDraw(uint32_t *dst, int stride, int width, int height,
+                        int x, int y);

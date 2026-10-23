@@ -429,8 +429,8 @@ static void DrawPanel(uint32_t *dst, int stride, int width, int height) {
   /* Top edge: the guest's own HUD, exactly what the Map and Equipment pause
    * screens show there. The tilemap at g_ram+0xC608 is the guest's BG3 copy,
    * kept current by HandleHudTilemap while paused; its tiles and palettes are
-   * read from the cartridge in place. Draw it 8 px down to align with the
-   * other pause tabs. */
+   * read from the cartridge in place. */
+  SmRomHudTopRowDraw(dst, stride, width, height, extra, 0);
   SmRomHudDraw(dst, stride, width, height, extra, 8,
                (const uint16_t *)(g_ram + 0xC608), 32, 3);
 

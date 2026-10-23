@@ -298,3 +298,19 @@ void SmRomHudDraw(uint32_t *dst, int stride, int width, int height,
     }
   }
 }
+
+void SmRomHudTopRowDraw(uint32_t *dst, int stride, int width, int height,
+                        int x, int y) {
+  if (!dst || stride <= 0) return;
+  uint32_t cgram[256];
+  LoadRomCgram(cgram);
+  for (int c = 0; c < 32; ++c) {
+    const unsigned entry = RomWord(0x80, 0x988B + (unsigned)c * 2u);
+    const unsigned tile = entry & 0x3FFu;
+    const unsigned palette = (entry >> 10) & 7u;
+    const int hflip = (entry >> 14) & 1;
+    const int vflip = (entry >> 15) & 1;
+    DrawRomTile(dst, stride, width, height, x + c * 8, y, 0x9A,
+                kHudTileBase, tile, 2, cgram + palette * 4, hflip, vflip);
+  }
+}
