@@ -3,6 +3,7 @@
 
 #include "sm_pause_options.h"
 
+#include "sm_rom_glyphs.h"
 #include <stddef.h>
 #include <string.h>
 
@@ -31,7 +32,6 @@ enum { kLabelMode_Map = 0, kLabelMode_Equipment = 2 };
 /* Game states the panel can be up in: paused, and the unpause fade-out a
  * Start press begins ($82:9324). */
 enum { kGameState_Paused = 0x0F, kGameState_UnpausingFadeOut = 0x10 };
-
 static unsigned GameState(void) { return g_ram[0x0998]; }
 static uint8 Inidisp(void) { return g_ram[0x0051]; }  /* reg_INIDISP shadow */
 
@@ -39,6 +39,9 @@ static uint8 Inidisp(void) { return g_ram[0x0051]; }  /* reg_INIDISP shadow */
 
 static const char kSection[] = "Options";
 static const char *g_aspect_choices[SM_ASPECT_COUNT];
+static bool g_leave_fade_in_progress = false;
+static bool g_enter_fade_active = false;
+static bool g_leave_fade_active = false;
 /* The framework's choices are fixed vocabulary; the SM aspect names come from
  * sm_video at panel creation. */
 static const char *g_fullscreen_choices[2] = { "Windowed", "Borderless" };
@@ -224,15 +227,41 @@ static bool Leaving(void) {
          menu_index == kPauseMenu_FadeOutToMap;
 }
 
+/* INIDISP entry/leave fade driver: called from SmAfterRunFrame. */
+void SmPauseOptions_FadeTick(void) {
+  static int s_inidisp_fade_frame = 0;
+  static int s_inidisp_fade_dir = 0;  // -1 = down, 1 = up, 0 = idle
+  if (SmPauseOptions_Visible() && s_inidisp_fade_dir == 0) {
+    s_inidisp_fade_dir = -1;
+    s_inidisp_fade_frame = 0;
+  }
+  if (s_inidisp_fade_dir != 0) {
+    s_inidisp_fade_frame++;
+    int val;
+    if (s_inidisp_fade_dir < 0) {
+      val = 15 - s_inidisp_fade_frame;
+      if (val < 0) { val = 0; s_inidisp_fade_dir = 1; }
+    } else {
+      val = s_inidisp_fade_frame - 8;
+      if (val > 15) { val = 15; s_inidisp_fade_dir = 0; }
+    }
+    g_ram[0x0051] = (uint8)val;
+  }
+}
+
 void SmPauseOptions_SyncToGuest(void) {
   if (!SmPauseOptions_IsActive()) return;
   const unsigned state = GameState();
-  /* Closed once the fade it was waiting on is over: the guest is in a Load
-   * state, or the game has moved past the paused states. While open, the
-   * tick holds menu_index on the Map screen, so nothing else is reachable. */
-  if (state == kGameState_Paused ? !(Leaving() || menu_index == kPauseMenu_MapScreen)
-                                 : state != kGameState_UnpausingFadeOut)
-    SmPauseOptions_SetActive(false);
+  /* No-pin model: the guest stays on whichever pause screen it was on, so the
+   * panel stays open while that screen (Map or Equipment) is up, and through
+   * the fade-out a tab change or unpause starts. When the fade lands on a Load
+   * state (menu_index 3/4/6) or the game leaves the paused states, close. */
+  const bool guest_on_pause_screen = menu_index == kPauseMenu_MapScreen ||
+                                     menu_index == kPauseMenu_EquipmentScreen;
+  const bool stay_open = (state == kGameState_Paused &&
+                          (guest_on_pause_screen || Leaving())) ||
+                         state == kGameState_UnpausingFadeOut;
+  if (!stay_open) SmPauseOptions_SetActive(false);
 }
 
 /* ── guest side ───────────────────────────────────────────────────────── */
@@ -242,6 +271,9 @@ enum {
                 kButton_Left | kButton_Down | kButton_Up | kButton_Start |
                 kButton_Select | kButton_Y | kButton_B,
 };
+
+/* Forward declare SFX helper. */
+static void HostWriteSfxId(uint16 id);
 
 /* Swallow presses so the ROM's ReleaseButtonsFilter(3) computes no newly-held
  * edge for them. A newly-pressed button is also in joypad1_lastkeys (it is
@@ -281,12 +313,15 @@ void SmPauseOptions_GuestTick(void) {
   }
   if (!SmPauseOptions_IsActive()) {
     /* The tab ring is Map -> Equipment -> Options -> Map (R forward, L back).
-     * The ROM ignores L on Map and R on Equipment, so these are free. */
+     * The ROM ignores L on Map and R on Equipment, so these are free. No-pin
+     * model: do NOT write menu_index=MapScreen here; let the ROM's own L handler
+     * run under the panel so the panel opens over whatever screen the guest is on
+     * (its real tab), avoiding the hop+beep of forcing the Map screen. */
     if ((menu_index == kPauseMenu_EquipmentScreen && (pressed & kButton_R)) ||
         (menu_index == kPauseMenu_MapScreen && (pressed & kButton_L))) {
       SmPauseOptions_SetActive(true);
       ConsumePad(kPanelOwned);
-      menu_index = kPauseMenu_MapScreen;  /* the ROM runs its Map under the panel */
+      HostWriteSfxId(0x38);  /* tab change SFX */
     }
     return;
   }
@@ -294,21 +329,25 @@ void SmPauseOptions_GuestTick(void) {
   ConsumePad(kPanelOwned);
   if (pressed & kButton_R) {
     LeaveTo(kPauseMenu_FadeOutToMap, kLabelMode_Map);
+    HostWriteSfxId(0x38);  /* tab change SFX */
     return;
   }
   if (pressed & kButton_L) {
     LeaveTo(kPauseMenu_FadeOutToEquipment, kLabelMode_Equipment);
+    HostWriteSfxId(0x38);  /* tab change SFX */
     return;
   }
   for (size_t i = 0; i < sizeof(kMenuButtons) / sizeof(kMenuButtons[0]); ++i)
-    if (pressed & kMenuButtons[i].button)
+    if (pressed & kMenuButtons[i].button) {
       recomp_runtime_ui_handle_input(g_ui, kMenuButtons[i].input, 1, 0);
+      HostWriteSfxId(0x37);  /* row nav SFX */
+    }
   if (g_leave || (pressed & kButton_B)) {
     g_leave = false;
     LeaveTo(kPauseMenu_FadeOutToMap, kLabelMode_Map);
+    HostWriteSfxId(0x38);  /* tab change SFX */
     return;
   }
-  menu_index = kPauseMenu_MapScreen;
 }
 
 /* ── rendering ────────────────────────────────────────────────────────── */
@@ -325,6 +364,11 @@ void SmPauseOptions_GuestTick(void) {
 #define COL_TABON  0xFFFFD24Du
 
 static int TextLen(const char *s) { return (int)strlen(s); }
+
+static void HostWriteSfxId(uint16 id) {
+  uint16 *rq = (uint16*)(&g_ram[0x0653]);
+  *rq = id;
+}
 
 static void DrawCentered(uint32_t *dst, int stride, int h_max, int width,
                          int y, const char *s, uint32_t col, int scale) {
@@ -363,30 +407,46 @@ void SmPauseOptions_Render(uint32_t *dst, int stride, int width, int height) {
   if (!dst || stride <= 0 || height <= 0 || !SmPauseOptions_IsActive()) return;
   if (width > stride) width = stride;
   DrawPanel(dst, stride, width, height);
-  if (Leaving())
+  if (Leaving() || g_enter_fade_active)
     DimToScreenBrightness(dst, stride, width, height);
 }
 
 static void DrawPanel(uint32_t *dst, int stride, int width, int height) {
+  /* Clip to the ROM game rect (256x224) with black margins. Width is the window
+   * width, which may be larger due to widescreen; extra margin is half the
+   * difference. */
+  const int game_width = 256;
+  const int game_height = 224;
+  const int extra = (width - game_width) / 2;
 
-  /* Opaque backdrop: the guest draws nothing meaningful on this tab (it is
-   * parked on its Map screen), so cover the whole game rect. */
-  snes_ovl_fill_rect(dst, stride, height, 0, 0, width, height, COL_BG);
-  snes_ovl_stroke_rect(dst, stride, height, 5, 5, width - 10, height - 10, COL_BORDER);
+  /* Fill the game rect with the panel background. */
+  snes_ovl_fill_rect(dst, stride, height, extra, 0, game_width, game_height, COL_BG);
+
+  /* Black margins: left of extra, right of extra+game_width to width. */
+  if (extra > 0) {
+    snes_ovl_fill_rect(dst, stride, height, 0, 0, extra, height, 0xFF000000u);
+    snes_ovl_fill_rect(dst, stride, height, extra + game_width, 0, width - extra - game_width, height, 0xFF000000u);
+  }
+
+  /* Border around the ROM game rect. */
+  snes_ovl_stroke_rect(dst, stride, height, extra + 5, 5, game_width - 10, game_height - 10, 0xFF3A4A6Au);
 
   /* Tab strip: MAP / EQUIP / OPTIONS, with the current tab lit. */
   {
     int y = 10;
-    snes_ovl_draw_text(dst, stride, height, 18, y, "MAP", COL_DIM, 1);
-    snes_ovl_draw_text(dst, stride, height, 18 + 4 * 8, y, "EQUIP", COL_DIM, 1);
-    int ox = 18 + (4 + 6) * 8;
+    SmRomGlyphDraw(dst, stride, width, height, extra + 18, y, "MAP", COL_DIM, 1);
+    SmRomGlyphDraw(dst, stride, width, height, extra + 18 + 4 * 8, y, "EQUIP", COL_DIM, 1);
+    int ox = extra + 18 + (4 + 6) * 8;
     snes_ovl_fill_rect(dst, stride, height, ox - 3, y - 3, 8 * 8 + 6, 14, COL_SELBG);
-    snes_ovl_draw_text(dst, stride, height, ox, y, "OPTIONS", COL_TABON, 1);
+    SmRomGlyphDraw(dst, stride, width, height, ox, y, "OPTIONS", COL_TABON, 1);
   }
 
-  snes_ovl_fill_rect(dst, stride, height, 10, 24, width - 20, 1, COL_BORDER);
-  DrawCentered(dst, stride, height, width, 30, "GAME OPTIONS", COL_TITLE, 1);
-  snes_ovl_fill_rect(dst, stride, height, 10, 42, width - 20, 1, COL_BORDER);
+  snes_ovl_fill_rect(dst, stride, height, extra + 10, 24, width - 20, 1, COL_BORDER);
+  {
+    int x = extra + (game_width - TextLen("GAME OPTIONS") * 8) / 2;
+    SmRomGlyphDraw(dst, stride, width, height, x, 30, "GAME OPTIONS", COL_TITLE, 1);
+  }
+  snes_ovl_fill_rect(dst, stride, height, extra + 10, 42, width - 20, 1, COL_BORDER);
 
   /* Rows, as the model reports them. The 8x8 font is upper-case only, so
    * "On" and "Fit" draw as ON and FIT. Eleven rows at 13px pitch from y=50
@@ -405,24 +465,22 @@ static void DrawPanel(uint32_t *dst, int stride, int width, int height) {
       uint32_t label_col = sel ? COL_SEL : (row.enabled ? COL_TEXT : COL_DIM);
       uint32_t value_col = sel ? COL_ACCENT : (row.enabled ? COL_TEXT : COL_DIM);
       if (sel)
-        snes_ovl_fill_rect(dst, stride, height, 14 + indent, row_y - 2,
-                           width - 28 - indent, 13, COL_SELBG);
-      snes_ovl_draw_text(dst, stride, height, 22 + indent, row_y,
+        snes_ovl_fill_rect(dst, stride, height, extra + 14 + indent, row_y - 2,
+                           game_width - 28 - indent, 13, COL_SELBG);
+      snes_ovl_draw_text(dst, stride, height, extra + 22 + indent, row_y,
                          row.label, label_col, 1);
       if (row.item->type != RECOMP_RUNTIME_UI_ACTION && row.value[0])
         snes_ovl_draw_text(dst, stride, height,
-                           width - 22 - indent - TextLen(row.value) * 8, row_y,
+                           extra + game_width - 22 - indent - TextLen(row.value) * 8, row_y,
                            row.value, value_col, 1);
     }
   }
 
-  /* Hint row. */
+  /* Bottom glyph row (L/R move tabs, START exits). */
   {
     int y = height - 20;
-    snes_ovl_fill_rect(dst, stride, height, 10, y - 6, width - 20, 1, COL_BORDER);
-    snes_ovl_draw_text(dst, stride, height, 14, y, "A SELECT", COL_ACCENT, 1);
-    snes_ovl_draw_text(dst, stride, height, 14 + 10 * 8, y, "B BACK", COL_ACCENT, 1);
-    snes_ovl_draw_text(dst, stride, height, 14 + 17 * 8, y, "L/R", COL_ACCENT, 1);
-    snes_ovl_draw_text(dst, stride, height, 14 + 21 * 8, y, "TABS", COL_DIM, 1);
+    snes_ovl_fill_rect(dst, stride, height, extra + 10, y - 6, game_width - 20, 1, COL_BORDER);
+    SmRomGlyphDraw(dst, stride, width, height, extra + 14, y, "L < > R MOVE TABS", COL_DIM, 1);
+    SmRomGlyphDraw(dst, stride, width, height, extra + 14 + 16 * 8, y, "START EXIT", COL_ACCENT, 1);
   }
 }

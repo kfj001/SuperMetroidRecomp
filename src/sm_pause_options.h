@@ -66,3 +66,4 @@ bool SmPauseOptions_Visible(void);
 
 /* Composite the panel over an ARGB8888 frame. stride is in pixels. */
 void SmPauseOptions_Render(uint32_t *dst, int stride, int width, int height);
+void SmPauseOptions_FadeTick(void);
