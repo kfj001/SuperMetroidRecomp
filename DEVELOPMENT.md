@@ -931,10 +931,13 @@ Gaps worth fixing on their own account:
 7. **Instrument gaps** — `get_reg_trace` truncates oldest-first with no marker;
    `get_cpu_state` returns zeros for this port. Both cost real time on
    2026-09-19.
-8. **AOT carries zero cycles** — `aot_cycle_pct: 0.0`, every guest cycle
-   interpreted, ~2.6 ms per simulated frame. This is what makes run-ahead
-   expensive at any N; the renderer fix helped the fixed per-frame cost, not
-   the multiplier.
+8. ~~**AOT carries zero cycles** — `aot_cycle_pct: 0.0`, every guest cycle
+   interpreted, ~2.6 ms per simulated frame.~~ **Superseded 2026-10-22**: the
+   0.0 reading predates the 2026-09-28 authority coverage. Measured on
+   v0.3.13 main, a release build over 10,800 attract frames runs 75.5% of CPU
+   bus cycles as AOT; with harvested coverage and the analyzer fixes below,
+   85.4%, and 93.6% across the whole nine-stage campaign. See "2026-10-22:
+   harvested coverage" below.
 
 ## 2026-09-28: authority coverage / Ceres Ridley return fix
 
@@ -1000,6 +1003,70 @@ scripts, `DisableFrameDelay=1`, SDL software presentation and dummy audio/video
 drivers; audio emulation remains enabled. The owner approved final play
 validation and authorized integration and the v0.3.10 release on 2026-10-14.
 Tracking: **beads-8wg.6.11**, **beads-8wg.2.126**.
+
+## 2026-10-22: harvested coverage folded into the release (beads-8wg.6.22)
+
+`profiles/release.json` shipped with `historical_profiles: []`. The attract
+profile was made opt-in on 2026-09-13 (3110e23) because the in-launcher
+Generate & rebuild wizard could not pass a profile, so dev and player regens
+differed. 94d725e retired that wizard but created the recipe with no
+profiles, and the 2026-10-15 progression sweep's interpreter fallbacks were
+never captured. The recipe now lists `attract_tier2.json` (adds 3 roots; cfg
+roots subsume the rest) and `coverage-0.3.13-20261022.json`, exported by
+`tools/sm_coverage_campaign.py` from a nine-stage headless campaign. The
+stages are: attract; equipment route with a save station; the remaining
+equipment; full pre-boss and post-boss sweeps (255 rooms each); Ceres; three
+assisted bosses; Mother Brain, the timed escape, the ending and credits; and
+a guest SRAM restart. The campaign ran on a trace build of the v0.3.13
+program.
+
+The profile was a small part of the gain (+62 roots): the harvested gaps are
+mostly variants the analyzer already rejects. The rest came from three
+framework fixes that the campaign exposed:
+
+- A BRK byte in authority data reached by a conditional branch arm is an
+  exact interpreter trap, not structural poison. PrepareBitAccess
+  (`TAX; BPL +; db $00`) poisoned CheckEventHappened, SetEventHappened and
+  every caller. The first version also accepted call continuations into
+  data. LoadLevelScrollAndCre then ran DecompressToMem's inline argument
+  bytes as a BRK and crashed Phantoon's room load, so the rule is now
+  limited to Bcc arms.
+- A jump to a sibling entry while a PHP is pending is decoded through.
+  QueueSfxN_MaxK -> QueueSfxN_Internal split there, and the PLP popped a P
+  the sibling never pushed. The old analysis published wrong exit widths,
+  e.g. $80:9A0E M1X1 exited "M0X0".
+- An inline-argument callee's RTL now expects the skipped return address.
+  With SpawnHdmaObject decoded through, the rewritten return was dispatched
+  as a nested frame and Phantoon2_Init ran twice. It was found by deny-gate
+  bisection (`SNESRECOMP_EMIT_AOT_DENY_GATE`) plus the always-on interpreter
+  edge ring: the BRK vector was entered from $00:00A1 after JSL $A0:8BE9
+  returned.
+
+Measured (CPU bus cycles from the always-on counters; harness numbers equal
+release-build exit-report numbers):
+
+| Stage | AOT before | AOT after |
+|---|---|---|
+| attract, 10,800 frames | 75.5% | 85.4% |
+| equipment route | 73.9% | 86.8% |
+| pre-boss sweep | 76.5% | 92.2% |
+| post-boss sweep | 79.3% | 93.2% |
+| bosses | 90.9% | 93.4% |
+| Mother Brain to credits | 92.2% | 95.5% |
+| whole campaign | 83.9% | 93.6% |
+
+Interpreted instructions dropped from 462M to 170M. Exact AOT variants rose
+from 14,446 to 15,207. Every stage outcome (rooms, pickups, bosses, ending)
+matches both the baseline and an interpreter-only reference
+(`SNESRECOMP_LLE_BOUNCE=0`). Attract ends with byte-identical WRAM against
+the baseline. Per-room snapshots differ from the interpreter-only run in
+the in-game frame clock and Samus' settle position (AOT vs interpreter
+cycle charges move lag frames); the baseline differs the same way. A second
+capture from the rebuilt program adds no roots, because its 8 candidates
+are all cfg `force_lle` exclusions (beads-8wg.6.23). Remaining interpreted
+time is the PLM loop (force_lle) and analyzer cascades in HDMA objects and
+enemy AI (beads-8wg.2.148). The PLP-with-unknown-P exit-width hazard is
+beads-8wg.2.147.
 
 ## Owner-gated (do NOT do without explicit decision)
 Merging `investigate/sm-0012-blocker` or the multi-tier branches to main;

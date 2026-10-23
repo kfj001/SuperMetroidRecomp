@@ -60,7 +60,10 @@ Game-side ctest targets: `sm_display_geometry`, `ppu_widescreen_windows`, `sm_wi
 `recomp/bankXX.cfg` files carry the per-bank directives and correctness exclusions.
 `tools/regen.sh` delegates to `tools/regen.py`, which verifies the ROM and
 builds `profiles/release.json` using the pinned native analyzer. CFG declarations
-seed AOT coverage; unproved code retains the portable ROM interpreter fallback.
+and the gameplay-harvested coverage listed in its `historical_profiles` seed AOT
+coverage; unproved code retains the portable ROM interpreter fallback. Refresh
+the harvested coverage with `tools/sm_coverage_campaign.py` (headless; needs a
+`-DSNESRECOMP_ENABLE_TRACE=ON` build for the TCP debug server).
 All release platforms compile the same generated program. Setup hosts and the
 in-launcher Generate & rebuild wizard are retired. Generated C stays private
 and is never committed or publicly packaged. See `docs/precompiled-releases.md`.
@@ -119,7 +122,7 @@ gaps. Full regeneration remains mandatory after changing generation inputs.
 ### Debugging workflow
 
 - `python3 snesrecomp/tools/check_link_closure.py src/gen` reports whether a generated tree will link — every `<Name>_M<m>X<x>` it calls is defined — in seconds, without building. `regen.sh` runs this automatically before publishing, so a fresh regen needs it only for a tree generation does not own: one a player produced through the launcher, or one attached to a bug report.
-- `build/last_run_report.json` is the always-on post-mortem written on crash/exit: CPU state, recomp stack, abandons, tier2 coverage, dispatch-log ring, DB/PB ring, and an SM-specific `sm{}` section (game_state, enemy slots). It is the primary crash-diagnosis artifact — the TCP debug server is not usable for SM.
+- `build/last_run_report.json` is the always-on post-mortem written on crash/exit: CPU state, recomp stack, abandons, tier2 coverage, dispatch-log ring, DB/PB ring, `execution_share` (interpreted vs AOT CPU cycles since boot), and an SM-specific `sm{}` section (game_state, enemy slots). It is the primary crash-diagnosis artifact. The TCP debug server exists only in `-DSNESRECOMP_ENABLE_TRACE=ON` builds; `tools/sm_progression_qa.py` and `tools/sm_coverage_campaign.py` drive it headlessly.
 - Differential oracle: `snesrecomp/tools/snesref` (headless snes9x libretro, per-frame WRAM trace via `SNESREF_FRAMES`/`SNESREF_TRACE_FILE`, frame dumps via `SNESREF_FRAME_DUMP_DIR`); build it with `tools/snesref/build.sh` on Linux and point it at any libretro SNES core. Recomp side traces via `SNESRECOMP_WRAM_TRACE_FILE`. Whole-WRAM traces don't align frame-for-frame — diff a single semantic variable's timeline instead (e.g. game_state `$0998`).
 - The `EnableSnes9xOracle` runtime option only makes sense from boot (it can't follow save-state loads); see the warning in `config.ini`.
 - Env-gated probes: `SNESRECOMP_SBOUND=lo-hi` (S/DB at every block in a PC range), `SNESRECOMP_IBRWATCH=lo-hi` (interp-bridge per-step trace), `SM_RASTER_PROBE=<path>` (the shape of each rendered frame: the HUD/room IRQ split's schedule, the layers and BG3 tilemap it left enabled, the HDMA mask armed, and the per-line BG mode; written on change plus any frame differing from BOTH neighbours).

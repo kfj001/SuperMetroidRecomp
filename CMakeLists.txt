@@ -89,6 +89,8 @@ if(BUILD_TESTING AND NOT ANDROID)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/door_audio_trace_test.py)
     add_test(NAME sm_release_payload
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/release_payload_test.py)
+    add_test(NAME sm_coverage_campaign
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/coverage_campaign_test.py)
     add_test(NAME sm_replay_inspector
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/replay_diagnostic_test.py)
     add_subdirectory(${SNESRECOMP_ROOT}/runner/tests/diagnostics diagnostic-writer-tests)
