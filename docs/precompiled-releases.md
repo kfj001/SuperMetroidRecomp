@@ -11,6 +11,41 @@ title-specific `force_lle` exclusions remain authoritative. Unproved execution
 continues through the portable ROM interpreter; precompiled packaging does not
 change that fallback or certify an unassisted full-game playthrough.
 
+## Harvested coverage
+
+`historical_profiles` lists tier-2 coverage captured from gameplay. Each file
+seeds analysis roots and conservative interpreter-only exclusions; it never
+supplies decoding facts, and each is validated separately against the ROM
+(snesrecomp `docs/COVERAGE_FEEDBACK.md`). Captures from different builds are
+never merged into one file. `profiles/attract_tier2.json` is the July v1
+attract capture; the `coverage-*` files come from the campaign below.
+
+The campaign (`tools/sm_coverage_campaign.py`) drives the memory-assisted
+progression harness (`tools/sm_progression_qa.py`) headlessly: attract, the
+equipment route and save station, both full room sweeps, Ceres, the three
+assisted bosses, Mother Brain, the timed escape, the ending, and a guest SRAM
+restart. It needs the TCP debug server, so capture from a
+`-DSNESRECOMP_ENABLE_TRACE=ON` build of the current generated program:
+
+```sh
+python3 tools/sm_coverage_campaign.py run --exe build-trace/SuperMetroidSNESRecomp   --rom /path/to/owned-rom.sfc --output _coverage/<name>
+python3 tools/sm_coverage_campaign.py export-profile _coverage/<name>   --output profiles/coverage-<version>-<date>.json
+```
+
+Add the file to `historical_profiles`, regenerate with `--strict-idempotent`,
+rebuild, rerun the campaign on the new executable (and with
+`--interpreter-only` for the reference) and compare:
+
+```sh
+python3 tools/sm_coverage_campaign.py compare _coverage/<before> _coverage/<after>
+```
+
+The exported profile keeps identities, discoveries and exclusions only:
+instruction costs are per-build measurements, and RAM routine snapshots hold
+ROM-derived code bytes that must not be published. A shipping build has no
+debug server; `release-attract` measures it from the `execution_share`
+section of its exit report instead.
+
 To prepare a release from a clean checkout at the pinned framework revisions:
 
 ```sh

@@ -31,8 +31,17 @@ def main():
                '--cfg-dir', str(ROOT / 'recomp'), '--source-root', str(ROOT / 'src')]
     if profile['cfg_roots']:
         command += ['--cfg-roots']
+    # Harvested coverage that seeds analysis. Each entry is validated
+    # independently against this ROM; only seeds and conservative exclusions
+    # carry forward (snesrecomp docs/COVERAGE_FEEDBACK.md). A v1 capture never
+    # recorded its ROM, so it is explicitly associated with the digest this
+    # script has just verified.
     for path in profile['historical_profiles']:
+        if not (ROOT / path).is_file():
+            parser.error(f'release profile references a missing coverage profile: {path}')
         command += ['--historical-profile-manifest', str(ROOT / path)]
+    if profile['historical_profiles']:
+        command += ['--legacy-profile-rom-sha256', profile['rom_sha256']]
     for path in args.profile_manifest:
         command += ['--profile-manifest', path]
     # Host alias/interrupt discovery reads the generated declarations too.
@@ -41,7 +50,10 @@ def main():
                     '--cfg-dir', str(ROOT / 'recomp'), '--out', str(ROOT / 'recomp/funcs.h')], check=True)
     subprocess.run(command + ['--out-dir', str(out)], check=True)
     if args.strict_idempotent:
-        with tempfile.TemporaryDirectory(prefix='sm-idempotency-') as scratch:
+        # The second tree is as large as the first (~200 MB): keep it in an
+        # ignored scratch directory of this checkout, never in the system
+        # temporary directory, and outside src/ where host roots are scanned.
+        with tempfile.TemporaryDirectory(prefix='_regen-idempotency-', dir=ROOT) as scratch:
             second = Path(scratch) / 'gen'
             subprocess.run(command + ['--out-dir', str(second)], check=True)
             def hashes(directory):
