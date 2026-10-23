@@ -431,7 +431,7 @@ static void DrawPanel(uint32_t *dst, int stride, int width, int height) {
    * kept current by HandleHudTilemap while paused; its tiles and palettes are
    * read from the cartridge in place. */
   SmRomHudTopRowDraw(dst, stride, width, height, extra, 0);
-  SmRomHudDraw(dst, stride, width, height, extra, 8,
+  SmRomHudDraw(dst, stride, width, height, extra, 7,
                (const uint16_t *)(g_ram + 0xC608), 32, 3);
 
   /* The window itself: the pause screen's BG2 frame at its native 256x160
