@@ -51,6 +51,7 @@ int main(int argc, char **argv) {
   fprintf(stderr, "Mode-7 custom lines: %u\n", stats.mode7_lines);
   fprintf(stderr, "Power-bomb extended window lines: %u\n", stats.power_bomb_lines);
   fprintf(stderr, "X-ray extended window lines: %u\n", stats.xray_lines);
+  fprintf(stderr, "Eye-beam extended window lines: %u\n", stats.eye_beam_lines);
   fprintf(stderr, "X-ray reveal tiles: %u / %u differ\n", stats.xray_tiles_differ, stats.xray_tiles_compared);
   fprintf(stderr, "Grapple: native pieces matched=%u margin pixels=%u\n", stats.grapple_native_matches, stats.grapple_margin_pixels);
   fprintf(stderr, "Grapple interpolated pieces: %u\n", stats.grapple_interpolated_pieces);

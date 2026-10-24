@@ -7,6 +7,44 @@ This is an experimental custom renderer. The requested worktree and Mods
 functionality is implemented; this is not a full-game visual-fidelity or
 sustained-performance certification.
 
+## October 2026 feedback regressions
+
+The HUD's BG3 tilemap can remain on the color-math subscreen after the
+gameplay IRQ. Its status/minimap rows now stay within the native horizontal
+span, preventing the dotted minimap border from wrapping into a widened
+margin. Native pixels and the first gameplay scanline remain intact. Static
+and parallax room backgrounds also respect authored room boundaries in the
+margins instead of wrapping unused tilemap columns into visible scenery.
+
+Unpause states 16 and 17 retain the centered stock menu image. State 16 still
+draws the menu fade; state 17 restores gameplay graphics under forced blank.
+Room widening resumes at state 18. This fixes the visible map-fade corruption;
+it does not certify Steam Deck frame times during the graphics reload.
+
+The Morph Ball Eye's window-1 light cone now has its own margin extension.
+It uses the retail tangent geometry, pre-update enemy/camera owner state and
+the updated HDMA half-width. The complete native table and each captured
+window register must agree before extrapolation. This avoids horizontal
+flattening at a clipped edge, including while the enemy angle changes.
+X-ray and power bombs retain their window-2 paths. Rendering does not run
+enemy logic or write game state.
+
+`sm_renderer_test` covers these pixel contracts, malformed/foreign beam state,
+missing owner latches and changing angles in both raster-storage variants.
+The renderer test also builds and runs as portable C on Linux. For a live
+eye-cone fixture, use `tools/fixtures/eye_beam_debug.txt` with
+`tools/test_custom_renderer.py --script ... --frames 3900 --fps 90 --audio`.
+It grants Morph Ball/health, enters room `$9E9F` through the ROM door loader
+and positions Samus near the eye; the guest activates the effect normally.
+Supply the usual `--exe`, `--rom` and `--artifacts` arguments. Use muted output
+for unattended runs. This is targeted diagnostic coverage, not a playthrough.
+
+Original-ROM SNES9x comparisons reproduce partial-reserve fill dithering and
+Etecoon song cancellation after pausing. The port matches both behaviors;
+the original animations and sound-effect semantics are preserved. Broader
+enemy/effect culling reports and general Steam Deck audio crackles still need
+their own reproductions; these renderer changes do not certify those cases.
+
 ## Requested feature audit
 
 | Requirement | Implementation and evidence |

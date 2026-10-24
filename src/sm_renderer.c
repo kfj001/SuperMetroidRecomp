@@ -169,7 +169,9 @@ static unsigned read16(const uint8_t *ram, unsigned address) {
   return ram[address] | (ram[address + 1] << 8);
 }
 static bool room_state(unsigned state) {
-  return (state >= 7 && state <= 13) || (state >= 16 && state <= 25) ||
+  /* Unpausing begins with a menu fade (16), then restores room graphics
+   * under forced blank (17). The room is ready for scanout in state 18. */
+  return (state >= 7 && state <= 13) || (state >= 18 && state <= 25) ||
          state == 27 || (state >= 32 && state <= 38) || state == 42;
 }
 bool SmRendererPowerBombWidths(const uint8_t profile[160], unsigned radius,
@@ -681,6 +683,7 @@ bool SmRendererXrayBlocks(const uint8_t ram[0x20000], uint16_t blocks[0x3200]) {
 
 typedef struct SmBackgroundLine {
   int shift, size, scroll_x, scroll_y, world_x, world_y, bpp;
+  int room_width, room_height, camera_x, camera_y;
   unsigned layer, sc, base, low, high;
   const uint8_t *room;
   const uint16_t *revealed;
@@ -698,6 +701,11 @@ static SmBackgroundLine background_line(const Ppu *p, const uint8_t *room, unsig
   b.base = ((p->bgTileAdr >> (layer * 4)) & 15) * 4096;
   b.low = low[layer];
   b.high = layer == 2 && (p->bgmode & 8) ? 15 : high[layer];
+  unsigned width = read16(room, 0x7a5), height = read16(room, 0x7a7);
+  if (layer < 2 && width && height && (uint64_t)width * height <= 0x3200) {
+    b.room_width = (int)width * 16; b.room_height = (int)height * 16;
+    b.camera_x = (int)read16(room, 0x911); b.camera_y = (int)read16(room, 0x915);
+  }
   if (b.size == 8 && (layer == 0 || (layer == 1 && !(room[0x91b] & 1)))) {
     /* Native scroll includes ring-buffer offsets. Recover the raster delta
      * relative to the live camera, then sample decompressed world data. */
@@ -716,6 +724,19 @@ static SmBackgroundLine background_line(const Ppu *p, const uint8_t *room, unsig
 
 static uint16_t background_pixel(const SmBackgroundLine *b, const uint16_t *vram,
                                  int x, int y, bool margin) {
+  /* Static/parallax BG2 still has hardware tilemap wrapping. Room edges
+   * apply to it as well as decompressed terrain: unused tilemap columns
+   * outside the authored room are not additional scenery. */
+  if (margin && b->room_width &&
+      (b->camera_x + x < 0 || b->camera_x + x >= b->room_width ||
+       b->camera_y + y < 0 || b->camera_y + y >= b->room_height)) return 0;
+  /* Gameplay can retain the HUD tilemap on the BG3 subscreen for color
+   * math. Its top four tile rows contain the minimap/status graphics, not
+   * repeating room art: wrapping negative X exposes the minimap's dotted
+   * bottom border across the left margin on the first post-IRQ line. Keep
+   * those HUD texels native-width, without clipping any gameplay row. */
+  if (margin && b->layer == 2 && b->sc == 0x5a &&
+      ((y + b->scroll_y) & 511) < 32) return 0;
   int size = b->size;
   int px, py;
   unsigned tile;
@@ -751,7 +772,7 @@ static uint16_t background_pixel(const SmBackgroundLine *b, const uint16_t *vram
   return (priority << 12) | (b->layer << 8) | palette | pixel;
 }
 
-typedef struct SmWideWindow { bool valid; int left, right; } SmWideWindow;
+typedef struct SmWideWindow { bool valid; int left, right; bool first; } SmWideWindow;
 
 static int q8_floor(int value) {
   return value >= 0 ? value / 256 : -((-value + 255) / 256);
@@ -858,6 +879,68 @@ static bool xray_windows(const SmSourceFrame *f, SmWideWindow rows[224]) {
   return true;
 }
 
+static bool eye_beam_windows(const SmSourceFrame *f, SmWideWindow rows[224]) {
+  /* $88:E987 builds the Morph Ball Eye cone with the same tangent walker
+   * as X-ray, but uses enemy slot 1 and the eye HDMA object's half-width.
+   * A clipped 0/255 edge is not a horizontal continuation of that cone. */
+  if (!f->object_state_valid) return false;
+  const uint8_t *ram = f->ram;
+  /* HdmaObjectHandler precedes camera/enemy updates. The owner latch has
+   * its input angle and position; current RAM has the updated HDMA width
+   * and generated table. Using the new enemy angle would flicker in motion. */
+  const uint8_t *owner = f->object_ram;
+  const uint8_t *enemy = owner + 0xfb8;
+  const uint8_t *definition = rom_bytes(0xa0, read16(enemy, 0), 26);
+  const uint8_t *table = rom_bytes(0x91, 0xc9d4, 258);
+  if (!definition || definition[12] != 0xa8 || read16(definition, 18) != 0x9058 ||
+      (read16(enemy, 14) & 0x300) || read16(ram, 0xfb8) != read16(enemy, 0) ||
+      !table) return false;
+  unsigned half_width = 5;
+  for (unsigned slot = 0; slot < 6; ++slot) {
+    unsigned phase = read16(ram, 0x18f0 + slot * 2);
+    if ((read16(ram, 0x18c0 + slot * 2) & 0xff00) == 0x8800 &&
+        (phase == 0xe9e6 || phase == 0xea3c || phase == 0xeacb)) {
+      half_width = read16(ram, 0x192c + slot * 2);
+      break;
+    }
+  }
+  if (half_width > 4) return false;
+  uint16_t tangent[129];
+  for (unsigned i = 0; i < 129; ++i) tangent[i] = (uint16_t)read16(table, i * 2);
+  int x = (int)read16(enemy, 2) - (int)read16(owner, 0x911);
+  int y = (int)read16(enemy, 6) - (int)read16(owner, 0x915);
+  int32_t left[230], right[230];
+  if (!SmRendererXrayBounds(tangent, x, y, read16(enemy, 54), half_width,
+                            left, right)) return false;
+  /* Require the guest's native table, including the last clamped edge pixel
+   * before its ramp becomes empty. Geometry only supplies the extra columns;
+   * every original pixel continues to use the captured hardware windows. */
+  for (unsigned row = 0; row < 230; ++row) {
+    unsigned native = read16(ram, 0x9100 + row * 2);
+    int l = left[row], r = right[row];
+    bool empty = l > r || l > 255 || r < 0;
+    if (!empty) {
+      if (native != (unsigned)(l < 0 ? 0 : l) + ((unsigned)(r > 255 ? 255 : r) << 8))
+        return false;
+    } else if ((native & 255) <= (native >> 8)) {
+      int toward = (int)row + ((int)row < y - 1 ? 1 : -1);
+      if (toward < 0 || toward >= 230 ||
+          !((native == 0xffff && l > 255 && left[toward] <= 255) ||
+            (native == 0 && r < 0 && right[toward] >= 0))) return false;
+    }
+  }
+  bool extended = false;
+  for (unsigned row = 0; row < 224; ++row) {
+    Ppu raster;
+    memcpy(&raster, f->lines[row].registers, PPU_SAVESTATE_REGS_SIZE);
+    unsigned native = read16(ram, 0x9100 + (row + 1) * 2);
+    if (raster.window1left != (native & 255) || raster.window1right != (native >> 8)) continue;
+    rows[row] = (SmWideWindow){true, left[row + 1], right[row + 1], true};
+    extended = true;
+  }
+  return extended;
+}
+
 /* NMI latches the indirect pointers before the game builds this frame's
  * row bytes. Use that same ordering, and verify both the generated table
  * and each raster register before extrapolating beyond native clipping. */
@@ -928,7 +1011,10 @@ static bool in_window(const Ppu *p, int layer, int x, int extra, const SmWideWin
   int r1 = p->window1right == 255 ? 255 + extra : p->window1right;
   int l2 = p->window2left == 0 ? -extra : p->window2left;
   int r2 = p->window2right == 255 ? 255 + extra : p->window2right;
-  if (wide->valid && (x < 0 || x >= 256)) { l2 = wide->left; r2 = wide->right; }
+  if (wide->valid && (x < 0 || x >= 256)) {
+    if (wide->first) { l1 = wide->left; r1 = wide->right; }
+    else { l2 = wide->left; r2 = wide->right; }
+  }
   bool a = (x >= l1 && x <= r1) != ((flags & 1) != 0);
   bool b = (x >= l2 && x <= r2) != ((flags & 4) != 0);
   if (!enabled1) return enabled2 && b;
@@ -1597,7 +1683,10 @@ bool SmRendererDraw(uint32_t *out, SmViewport viewport, bool hud_anchored, doubl
   uint8_t mode7_pixels[SM_MAX_WIDTH];
   SmWideWindow wide_windows[224];
   power_bomb_windows(f, wide_windows);
+  bool power_bomb = false;
+  for (unsigned y = 0; y < 224; ++y) power_bomb |= wide_windows[y].valid;
   bool xray = xray_windows(f, wide_windows);
+  bool eye_beam = !xray && !power_bomb && eye_beam_windows(f, wide_windows);
   bool xray_reveal = xray && SmRendererXrayBlocks(f->ram, xray_blocks);
   SmGrapplePiece grapple[17];
   bool grapple_recover_native[17] = {false};
@@ -1729,6 +1818,7 @@ bool SmRendererDraw(uint32_t *out, SmViewport viewport, bool hud_anchored, doubl
     if (mode == 7) ++render_stats.mode7_lines;
     if (wide_windows[y].valid) {
       if (xray) ++render_stats.xray_lines;
+      else if (eye_beam) ++render_stats.eye_beam_lines;
       else ++render_stats.power_bomb_lines;
     }
     if (scanout.inidisp & 128) continue;
