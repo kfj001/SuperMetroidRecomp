@@ -32,6 +32,10 @@ enum {
   kFontTileBase = 0xC000,   /* $B6:C000 */
   kFrameTileBase = 0x8000,  /* $B6:8000, the pause screen's BG2 tileset */
   kHudTileBase = 0xB200,    /* $9A:B200, the HUD tileset loaded to VRAM 0x8000 */
+  kPauseTilemapBase = 0xE000, /* $B6:E000, the pause screen's BG2 tilemap */
+  kPauseFooterRow = 25,     /* the footer strip is tilemap rows 25-26 */
+  kPauseTilemapCols = 32,
+  kPauseFooterRows = 2,
   kPausePaletteBase = 0xF000, /* $B6:F000, the full 512-byte pause palette set */
   kFramePalette = 2,        /* the tilemap's frame entries use palette 2 */
   kFontTileBytes = 32,      /* 4bpp: 8 words planes 0/1 + 8 words planes 2/3 */
@@ -266,6 +270,34 @@ void SmRomPauseFrameDraw(uint32_t *dst, int stride, int width, int height,
                 kFrameTileBase, 0xcf, 4, pal, 1, 0);
     DrawRomTile(dst, stride, width, height, x + (cols - 1) * 8, y + r * 8, 0xB6,
                 kFrameTileBase, 0xcf, 4, pal, 0, 0);
+  }
+}
+
+/* ── pause-window footer (tab strip) ───────────────────────────────────
+ *
+ * The pause screen's bottom edge is BG2 tilemap rows 25-26 -- the 128-byte
+ * strip UpdatePauseMenuLRStartVramTilemap DMAs to VRAM ($82:A84D). It is the
+ * native tab indicator: the pause tabs, the L/R navigation arrows and the
+ * START prompt, all BG2 tiles in the $B6:8000 tileset with palette 2 from
+ * $B6:F000. The static ROM tilemap is read in place and each entry carries
+ * its own tile, palette and flips, so no glyph bitmap is host-authored. */
+void SmRomPauseFooterDraw(uint32_t *dst, int stride, int width, int height,
+                          int x, int y) {
+  if (!dst || stride <= 0) return;
+  uint32_t cgram[256];
+  LoadRomCgram(cgram);
+  const unsigned base =
+      kPauseTilemapBase + kPauseFooterRow * kPauseTilemapCols * 2u;
+  for (int r = 0; r < kPauseFooterRows; ++r) {
+    for (int c = 0; c < kPauseTilemapCols; ++c) {
+      const unsigned entry = RomWord(0xB6, base + (r * kPauseTilemapCols + c) * 2u);
+      const unsigned tile = entry & 0x3FFu;
+      const unsigned palette = (entry >> 10) & 7u;
+      const int hflip = (entry >> 13) & 1;
+      const int vflip = (entry >> 14) & 1;
+      DrawRomTile(dst, stride, width, height, x + c * 8, y + r * 8, 0xB6,
+                  kFrameTileBase, tile, 4, cgram + palette * 16, hflip, vflip);
+    }
   }
 }
 

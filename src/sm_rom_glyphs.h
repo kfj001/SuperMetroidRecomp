@@ -1,8 +1,8 @@
 /* sm_rom_glyphs.h — M2 ROM glyph and chrome renderer (hand-written, NOT
- * src/gen). The small-font tiles stay in the cartridge at $B6:$C000 and the
- * pause-window tiles/palette at $B6:$8000 / $B6:$F000; this module reads them
- * through SmRomByte at render time. No glyph, tile or palette bitmap is
- * extracted. */
+ * src/gen). The small-font tiles stay in the cartridge at $B6:$C000, the
+ * pause-window tiles/tilemap/palette at $B6:$8000 / $B6:$E000 / $B6:$F000;
+ * this module reads them through SmRomByte at render time. No glyph, tile,
+ * tilemap or palette bitmap is extracted. */
 #pragma once
 #include <stdint.h>
 
@@ -29,6 +29,16 @@ void SmRomGlyphDraw(uint32_t *dst, int stride, int width, int height,
 void SmRomPauseFrameDraw(uint32_t *dst, int stride, int width, int height,
                          int x, int y, int w, int h,
                          int gap_col, int gap_tiles);
+
+/* Draw the pause screen's bottom tab strip: BG2 tilemap rows 25-26 (the 128-
+ * byte footer UpdatePauseMenuLRStartVramTilemap DMAs to VRAM), 32 columns wide
+ * and 16 px tall, read in place from $B6:E000. Each entry supplies its own
+ * tile, palette (16 CGRAM entries from $B6:F000) and h/v flips, so the tab
+ * labels, arrows and framing are the cartridge's art, not host-drawn glyphs.
+ * dst/stride/width/height: output framebuffer (ARGB8888) and dimensions.
+ * x,y: top-left destination of the strip (it spans 256 px wide, 16 px tall). */
+void SmRomPauseFooterDraw(uint32_t *dst, int stride, int width, int height,
+                          int x, int y);
 
 /* Draw the guest's pause-screen HUD from its BG3 tilemap (32 columns x 3 rows;
  * `cells` points at the guest copy in WRAM). The Map and Equipment pause
