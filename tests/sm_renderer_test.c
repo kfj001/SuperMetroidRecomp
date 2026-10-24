@@ -91,7 +91,150 @@ static void raster_storage(void) {
   ResetFixtureRenderer();memset(ram,0,sizeof(ram));memset(&ppu,0,sizeof(ppu));
 }
 
+static void pause_menu_fade(void) {
+  /* State 16 still draws the equipment/map menu while it fades out. State
+   * 17 restores gameplay graphics under forced blank; only 18 fades them in.
+   * Stale room RAM must not turn either menu into widened room tiles. */
+  const unsigned states[] = {14, 15, 16, 17};
+  const SmViewport views[] = {{256, 0, 4.0 / 3, false},
+      {342, 43, 16.0 / 9, true}, {448, 96, 21.0 / 9, true},
+      {682, 213, 32.0 / 9, true}};
+  memset(ram, 0, sizeof(ram)); memset(&ppu, 0, sizeof(ppu));
+  ppu.inidisp = 15; ppu.bgmode = 1; ppu.screenEnabled[0] = 1;
+  ppu.bgTileAdr = 1; ppu.cgram[1] = 31;
+  for (unsigned y = 0; y < 8; ++y) ppu.vram[4096 + y] = 255;
+  for (unsigned y = 0; y < 224; ++y)
+    for (unsigned x = 0; x < 256; ++x)
+      stock[y * 256 + x] = 0x123456 ^ (y << 16) ^ (x << 8);
+  for (unsigned s = 0; s < sizeof(states) / sizeof(states[0]); ++s) {
+    ResetFixtureRenderer(); word(0x998, states[s]);
+    for (unsigned frame = 1; frame <= 2; ++frame) {
+      BeginFixtureFrame(ram, frame);
+      for (unsigned y = 1; y <= 224; ++y) SmRendererCaptureLine(&ppu, y);
+      assert(SmRendererEndFrame(stock));
+    }
+    for (unsigned v = 0; v < sizeof(views) / sizeof(views[0]); ++v)
+      for (unsigned anchored = 0; anchored <= 1; ++anchored)
+        for (unsigned phase = 0; phase <= 2; ++phase) {
+          SmViewport view = views[v];
+          assert(SmRendererDraw(output, view, anchored != 0, phase * 0.5));
+          for (unsigned y = 0; y < 224; ++y)
+            for (int x = 0; x < view.width; ++x)
+              assert(output[y * view.width + x] ==
+                  (x >= view.extra && x < view.extra + 256 ?
+                   stock[y * 256 + x - view.extra] : 0));
+          assert(SmRendererGetStats().stock_lines == 224);
+        }
+  }
+  ResetFixtureRenderer(); memset(ram, 0, sizeof(ram));
+  memset(&ppu, 0, sizeof(ppu)); memset(stock, 0, sizeof(stock));
+}
+
+static void hud_colour_math_margins(void) {
+  /* After the HUD IRQ, BG3 can still feed the color-math subscreen. Its
+   * minimap border must not wrap from native X=255 into the left margin.
+   * The next tile row and genuine room BG3 maps must keep widening. */
+  const SmViewport view = {342, 43, 16.0 / 9, true};
+  for (unsigned map = 0; map < 2; ++map) {
+    ResetFixtureRenderer(); memset(ram, 0, sizeof(ram));
+    memset(&ppu, 0, sizeof(ppu)); memset(stock, 0, sizeof(stock));
+    word(0x998, 8);
+    ppu.inidisp = 15; ppu.bgmode = 1; ppu.bgTileAdr = 0x400;
+    ppu.bgXsc[2] = map ? 0x5c : 0x5a;
+    ppu.screenEnabled[0] = 1; ppu.screenEnabled[1] = 4;
+    ppu.cgadsub = 32; ppu.cgwsel = 2; ppu.cgram[1] = 0x7fff;
+    unsigned base = (ppu.bgXsc[2] & 0xfc) * 256;
+    ppu.vram[base + 3 * 32 + 31] = 1;
+    ppu.vram[base + 4 * 32 + 31] = 1;
+    for (unsigned y = 0; y < 8; ++y) ppu.vram[0x4008 + y] = 255;
+    BeginFixtureFrame(ram, 1);
+    for (unsigned y = 1; y <= 224; ++y) SmRendererCaptureLine(&ppu, y);
+    assert(SmRendererEndFrame(stock));
+    assert(SmRendererDraw(output, view, true, 1));
+    assert(output[30 * view.width + view.extra + 255] == 0xffffff);
+    assert(output[30 * view.width + view.extra - 1] == (map ? 0xffffff : 0));
+    assert(output[31 * view.width + view.extra - 1] == 0xffffff);
+  }
+  ResetFixtureRenderer(); memset(ram, 0, sizeof(ram));
+  memset(&ppu, 0, sizeof(ppu)); memset(stock, 0, sizeof(stock));
+}
+
+static void eye_beam_margins(void) {
+  const SmViewport view = {342, 43, 16.0 / 9, true};
+  for (unsigned fault = 0; fault < 7; ++fault) {
+    ResetFixtureRenderer(); memset(ram, 0, sizeof(ram));
+    memset(&ppu, 0, sizeof(ppu)); memset(rom, 0, sizeof(rom));
+    SmRendererSetRom(rom, sizeof(rom)); word(0x998, 8);
+    word(0x7a5, 32); word(0x7a7, 32);
+    word(0xfb8, 0xe6bf); word(0xfba, 128); word(0xfbe, 180); word(0xfee, 32);
+    rom[0x1066bf + 12] = fault == 1 ? 0xa7 : 0xa8;
+    romword(0x1066bf + 18, 0x9058);
+    word(0x18c0, 0x8820); word(0x18f0, fault == 2 ? 0x84b8 : 0xea3c);
+    word(0x192c, 4);
+    romword(0x8c9d4 + 28 * 2, 128); romword(0x8c9d4 + 36 * 2, 384);
+    /* Independent half/three-halves Q8 edge walks, aimed up/right. */
+    for (int row = 0; row < 230; ++row) {
+      int distance = 179 - row;
+      unsigned l = distance >= 0 ? 128 + distance / 2 : 255;
+      unsigned r = distance >= 0 ? 128 + distance * 3 / 2 : 0;
+      word(0x9100 + row * 2, l | (r > 255 ? 255 : r) << 8);
+    }
+    if (fault == 3) word(0x9100 + 100 * 2, 0);
+    ppu.inidisp = 15; ppu.bgmode = 1; ppu.bgTileAdr = 1;
+    ppu.screenEnabled[0] = 1; ppu.cgadsub = 1; ppu.cgwsel = 0x20;
+    ppu.windowsel = 2u << 20; ppu.fixedColor = 31 << 10; ppu.cgram[1] = 31;
+    for (unsigned row = 0; row < 8; ++row) ppu.vram[4096 + row] = 255;
+    if (fault == 5) {
+      LatchFixtureState(ram);
+      word(0xfee, 96); /* Enemy changed its angle after HDMA ran. */
+    }
+    if (fault == 6) SmRendererBeginFrame(ram, 1); /* Missing owner latch. */
+    else BeginFixtureFrame(ram, 1);
+    for (unsigned y = 1; y <= 224; ++y) {
+      unsigned bounds = ram[0x9100 + y * 2] | ram[0x9101 + y * 2] << 8;
+      ppu.window1left = fault == 4 ? 0 : bounds & 255;
+      ppu.window1right = fault == 4 ? 0 : bounds >> 8;
+      SmRendererCaptureLine(&ppu, y);
+    }
+    assert(SmRendererEndFrame(stock));
+    assert(SmRendererDraw(output, view, false, 1));
+    bool valid = fault == 0 || fault == 5;
+    assert(SmRendererGetStats().eye_beam_lines == (valid ? 224 : 0));
+    if (valid) {
+      assert(output[90 * view.width + view.extra + 270] == 0xff00ff);
+      assert(output[70 * view.width + view.extra + 270] == 0xff0000);
+      assert(output[90 * view.width + view.extra + 200] == 0xff0000);
+    }
+  }
+  ResetFixtureRenderer(); SmRendererSetRom(NULL, 0);
+  memset(ram, 0, sizeof(ram)); memset(&ppu, 0, sizeof(ppu));
+  memset(rom, 0, sizeof(rom)); memset(stock, 0, sizeof(stock));
+}
+
+static void static_background_room_edges(void) {
+  const SmViewport view = {342, 43, 16.0 / 9, true};
+  for (unsigned camera = 0; camera < 2; ++camera) {
+    ResetFixtureRenderer(); memset(ram, 0, sizeof(ram)); memset(&ppu, 0, sizeof(ppu));
+    word(0x998, 8); word(0x7a5, 32); word(0x7a7, 32);
+    word(0x911, camera * 256); word(0x91b, 1); /* Static/parallax BG2. */
+    ppu.inidisp = 15; ppu.bgmode = 1; ppu.screenEnabled[0] = 2;
+    ppu.bgXsc[1] = 0x48; ppu.bgTileAdr = 0x10; ppu.cgram[1] = 31 << 5;
+    for (unsigned y = 0; y < 8; ++y) ppu.vram[4096 + y] = 255;
+    BeginFixtureFrame(ram, 1);
+    for (unsigned y = 1; y <= 224; ++y) SmRendererCaptureLine(&ppu, y);
+    assert(SmRendererEndFrame(stock)); assert(SmRendererDraw(output, view, false, 1));
+    assert(output[100 * view.width + view.extra + 255] == 0x00ff00);
+    assert(output[100 * view.width + view.extra - 1] == (camera ? 0x00ff00 : 0));
+    assert(output[100 * view.width + view.extra + 256] == (camera ? 0 : 0x00ff00));
+  }
+  ResetFixtureRenderer(); memset(ram, 0, sizeof(ram)); memset(&ppu, 0, sizeof(ppu));
+}
+
 int main(int argc, char **argv) {
+  pause_menu_fade();
+  hud_colour_math_margins();
+  eye_beam_margins();
+  static_background_room_edges();
   raster_storage();
   /* Reveal substitutions, row-major multi-block writes, linked BTS blocks,
    * item collection and room-state overrides, all without guest execution. */

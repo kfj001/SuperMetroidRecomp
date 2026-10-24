@@ -1,0 +1,24 @@
+# Diagnostic attract takeover, Morph Ball/health grants and a ROM door-loader
+# jump into $9E9F. The eye itself activates and builds its HDMA table normally.
+# Samus is held near the eye; these writes do not set an effect/success flag.
+wait 3200
+poke 0998 0800
+poke 0a42 95e625e7
+poke 0a60 13e9
+poke 09a2 0400
+poke 09a4 0400
+poke 09c2 e703
+poke 09c4 e703
+poke 078d 868e
+poke 0af6 f000
+poke 0afa 8000
+poke 0b10 f000
+poke 0b14 8000
+poke 0e16 0000
+poke 099c 7de1
+poke 0998 0900
+until16 0998 == 0008 1500
+wait 90
+forcepoke 0af6 8004
+forcepoke 0afa 8002
+wait 10000
