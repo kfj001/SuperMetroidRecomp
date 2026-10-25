@@ -184,12 +184,26 @@ static RecompRuntimeUi *Ui(void) {
   return g_ui;
 }
 
+/* Highlight the active tab's label cells in the guest's footer tilemap copy.
+ * label_mode 0 = Map label lit (footer cols 1-4), 2 = Equipment label lit
+ * (footer cols 5-9). Border cells (tile 0x001) keep palette 2. The active
+ * tab's cells switch to palette 3 for a lit highlight. */
+static void HighlightFooterTab(void);
+
 void SmPauseOptions_SetActive(bool active) {
   RecompRuntimeUi *ui = Ui();
   if (!ui || active == (recomp_runtime_ui_is_open(ui) != 0)) return;
   g_leave = false;
-  if (active) recomp_runtime_ui_open_section(ui, kSection);
-  else recomp_runtime_ui_close(ui);
+  if (active) {
+    recomp_runtime_ui_open_section(ui, kSection);
+    /* Populate the guest's footer tilemap copy from the ROM and highlight the
+     * active tab's label cells so the tab strip shows the correct labels for
+     * the screen the panel is opening over. The guest's own pause routine
+     * keeps it current between frames, including palette animations. */
+    SmRomPauseFooterUpdate();
+    HighlightFooterTab();
+  } else
+    recomp_runtime_ui_close(ui);
 }
 
 bool SmPauseOptions_IsActive(void) {
@@ -284,10 +298,38 @@ static void ConsumePad(uint16 mask) {
   newly_held_down_timed_held_input &= (uint16)~mask;
 }
 
+/* Highlight the active tab's label cells in the guest's footer tilemap copy.
+ * label_mode 0 = Map label lit (footer cols 1-4), 2 = Equipment label lit
+ * (footer cols 5-9). Border cells (tile 0x001) keep palette 2. The active
+ * tab's cells switch to palette 3 for a lit highlight. */
+static void HighlightFooterTab(void) {
+  uint16_t *cells = (uint16_t *)(g_ram + 0x3000);
+  const unsigned base = 25u * 32u;  /* kPauseFooterRow * kPauseTilemapCols */
+  const uint16_t label_mode = (uint16_t)pausemenu_button_label_mode;
+  for (int r = 0; r < 2; ++r) {  /* kPauseFooterRows */
+    for (int c = 0; c < 32; ++c) {  /* kPauseTilemapCols */
+      unsigned idx = base + r * 32u + c;
+      uint16_t entry = cells[idx];
+      unsigned tile = entry & 0x3FFu;
+      if (tile == 0x001u) continue;  /* border/cap cells stay palette 2 */
+      bool highlight = false;
+      if (label_mode == kLabelMode_Map && c >= 1 && c <= 4) highlight = true;
+      if (label_mode == kLabelMode_Equipment && c >= 5 && c <= 9) highlight = true;
+      if (highlight)
+        entry = (uint16_t)((entry & 0xFCFFu) | (3u << 10));  /* palette 3 */
+      cells[idx] = entry;
+    }
+  }
+}
+
 /* Leave the panel for a ROM screen, starting from the fade-out. */
 static void LeaveTo(uint16 fade_out_state, uint16 label_mode) {
   menu_index = fade_out_state;
   pausemenu_button_label_mode = label_mode;
+  /* The footer tilemap copy needs refreshing for the target tab's labels,
+   * with the target tab highlighted. */
+  SmRomPauseFooterUpdate();
+  HighlightFooterTab();
 }
 
 void SmPauseOptions_GuestTick(void) {
@@ -327,13 +369,23 @@ void SmPauseOptions_GuestTick(void) {
   }
 
   ConsumePad(kPanelOwned);
+  /* Refresh the guest's footer tilemap copy from the ROM each frame so the
+   * tab strip always has the current base labels, then highlight the active
+   * tab's label cells. The guest's own pause routine runs after this tick
+   * and can then apply palette animations on top. */
+  SmRomPauseFooterUpdate();
+  HighlightFooterTab();
   if (pressed & kButton_R) {
-    LeaveTo(kPauseMenu_FadeOutToMap, kLabelMode_Map);
+    /* R always navigates toward Equipment/Samus, matching the ROM's behavior
+     * on the Map screen (R -> Equipment). */
+    LeaveTo(kPauseMenu_FadeOutToEquipment, kLabelMode_Equipment);
     HostWriteSfxId(0x38);  /* tab change SFX */
     return;
   }
   if (pressed & kButton_L) {
-    LeaveTo(kPauseMenu_FadeOutToEquipment, kLabelMode_Equipment);
+    /* L always navigates toward Map, matching the ROM's behavior on the
+     * Equipment screen (L -> Map). */
+    LeaveTo(kPauseMenu_FadeOutToMap, kLabelMode_Map);
     HostWriteSfxId(0x38);  /* tab change SFX */
     return;
   }
@@ -473,7 +525,10 @@ static void DrawPanel(uint32_t *dst, int stride, int width, int height) {
   /* Bottom tab strip: the pause screen's own footer (BG2 tilemap rows 25-26)
    * at its native position, flush below the frame. Its tab labels, the L/R
    * navigation arrows and the START prompt are all cartridge art read in
-   * place -- nothing host-drawn. The 8px row below it (tilemap row 27) stays
+   * place -- nothing host-drawn. The footer tilemap copy at g_ram+0x3000 is
+   * refreshed when the panel opens or changes tabs (see SmPauseOptions_SetActive
+   * and LeaveTo); the guest's own pause routine keeps it current between frames,
+   * including palette animations. The 8px row below it (tilemap row 27) stays
    * the panel background. */
   SmRomPauseFooterDraw(dst, stride, width, height, extra, game_height - 24);
 }

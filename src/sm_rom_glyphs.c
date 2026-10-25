@@ -27,6 +27,7 @@
 #include <stdint.h>
 #include "sm_rom_glyphs.h"
 #include "sm_renderer.h"
+#include "common_rtl.h"
 
 enum {
   kFontTileBase = 0xC000,   /* $B6:C000 */
@@ -279,24 +280,40 @@ void SmRomPauseFrameDraw(uint32_t *dst, int stride, int width, int height,
  * strip UpdatePauseMenuLRStartVramTilemap DMAs to VRAM ($82:A84D). It is the
  * native tab indicator: the pause tabs, the L/R navigation arrows and the
  * START prompt, all BG2 tiles in the $B6:8000 tileset with palette 2 from
- * $B6:F000. The static ROM tilemap is read in place and each entry carries
- * its own tile, palette and flips, so no glyph bitmap is host-authored. */
+ * $B6:F000. The guest keeps a copy in RAM (ram3000.pause_menu_map_tilemap at
+ * g_ram+0x3000) that it updates for highlights and palette animations, so read
+ * from the guest copy. */
 void SmRomPauseFooterDraw(uint32_t *dst, int stride, int width, int height,
                           int x, int y) {
   if (!dst || stride <= 0) return;
   uint32_t cgram[256];
   LoadRomCgram(cgram);
-  const unsigned base =
-      kPauseTilemapBase + kPauseFooterRow * kPauseTilemapCols * 2u;
+  const uint16_t *cells = (const uint16_t *)(g_ram + 0x3000);
+  const unsigned base = kPauseFooterRow * kPauseTilemapCols;
   for (int r = 0; r < kPauseFooterRows; ++r) {
     for (int c = 0; c < kPauseTilemapCols; ++c) {
-      const unsigned entry = RomWord(0xB6, base + (r * kPauseTilemapCols + c) * 2u);
-      const unsigned tile = entry & 0x3FFu;
+      unsigned entry = cells[base + r * kPauseTilemapCols + c];
+      unsigned tile = entry & 0x3FFu;
       const unsigned palette = (entry >> 10) & 7u;
-      const int hflip = (entry >> 13) & 1;
-      const int vflip = (entry >> 14) & 1;
+      const int hflip = (entry >> 14) & 1;
+      const int vflip = (entry >> 15) & 1;
       DrawRomTile(dst, stride, width, height, x + c * 8, y + r * 8, 0xB6,
                   kFrameTileBase, tile, 4, cgram + palette * 16, hflip, vflip);
+    }
+  }
+}
+
+void SmRomPauseFooterUpdate(void) {
+  uint16_t *cells = (uint16_t *)(g_ram + 0x3000);
+  const unsigned base = kPauseFooterRow * kPauseTilemapCols;
+  for (int r = 0; r < kPauseFooterRows; ++r) {
+    for (int c = 0; c < kPauseTilemapCols; ++c) {
+      unsigned rom_addr =
+          kPauseTilemapBase + (kPauseFooterRow + r) * kPauseTilemapCols * 2u +
+          c * 2u;
+      uint16_t entry = (uint16_t)SmRomByte(0xB6, rom_addr) |
+                       ((uint16_t)SmRomByte(0xB6, rom_addr + 1u) << 8);
+      cells[base + r * kPauseTilemapCols + c] = entry;
     }
   }
 }

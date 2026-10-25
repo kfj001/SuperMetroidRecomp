@@ -40,6 +40,13 @@ void SmRomPauseFrameDraw(uint32_t *dst, int stride, int width, int height,
 void SmRomPauseFooterDraw(uint32_t *dst, int stride, int width, int height,
                           int x, int y);
 
+/* Update the guest's pause footer tilemap copy at g_ram+0x3000 (rows 25-26)
+ * from the ROM tilemap at $B6:E640/$B6:E680. Called when the Options panel
+ * opens or changes tabs so the tab strip shows the correct labels for the
+ * current tab state. The guest's own pause routine keeps it current between
+ * frames, including palette animations (glow/pulse). */
+void SmRomPauseFooterUpdate(void);
+
 /* Draw the guest's pause-screen HUD from its BG3 tilemap (32 columns x 3 rows;
  * `cells` points at the guest copy in WRAM). The Map and Equipment pause
  * screens show this same HUD along the top edge. BG3 is 2bpp in Mode 1, so
