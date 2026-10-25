@@ -345,8 +345,8 @@ int main(void) {
   Frame(kButton_Left, 0);
   assert(g_sm_video.enhanced && g_sm_video.hud_anchored);
   Frame(kButton_Down, 0);   /* HUD anchoring, now reachable */
-  HashCheck(256, 0x1367827Au);
-  HashCheck(342, 0x4F952820u);
+  HashCheck(256, 0xA17835DFu);
+  HashCheck(342, 0xFB67C523u);
   Frame(kButton_A, 0);
   assert(!g_sm_video.hud_anchored && g_sm_video.enhanced);
 
@@ -358,7 +358,7 @@ int main(void) {
   HashCheck(684, 0x84099E51u);
   Frame(kButton_Right, 0);  /* Borderless */
   assert(f_fullscreen == 1 && g_config_dirty);
-  HashCheck(256, 0x45D6E923u);
+  HashCheck(256, 0x518D129Eu);
   /* VSync is a three-way choice that wraps at both ends. */
   Frame(kButton_Down, 0);   /* VSync */
   Frame(kButton_Right, 0);
@@ -428,8 +428,8 @@ int main(void) {
   assert(f_window_scale == 5);
   Frame(kButton_Left, 0);
   assert(f_window_scale == 4);
-  HashCheck(256, 0x777E478Du);
-  HashCheck(684, 0xED8D193Du);
+  HashCheck(256, 0x82FE279Cu);
+  HashCheck(684, 0xA0885294u);
 
   /* Back: the ROM's Equipment->Map fade-out. The panel stays up,
    * dimmed with the screen, takes no input, and closes at the Load. */

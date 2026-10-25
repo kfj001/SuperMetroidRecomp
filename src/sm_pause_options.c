@@ -205,15 +205,12 @@ void SmPauseOptions_SetActive(bool active) {
   g_leave = false;
   if (active) {
     recomp_runtime_ui_open_section(ui, kSection);
-    /* Populate the guest's footer tilemap copy from the ROM, highlight the
-     * active tab's label cells, and start the L/R arrow glow animation so
-     * the tab strip shows the correct labels for the screen the panel is
-     * opening over. The guest's own pause routine keeps it current between
-     * frames, including palette animations. */
+    /* Populate the guest's footer tilemap copy from the ROM so the tab strip
+     * shows the correct labels for the screen the panel is opening over.
+     * Tab highlighting and L/R arrow glow are applied each frame in DrawPanel,
+     * after the guest's own pause routine has run its palette animations. */
     SmRomPauseFooterUpdate();
-    HighlightFooterTab();
     GlowFooterLrReset();
-    GlowFooterLr();
   } else
     recomp_runtime_ui_close(ui);
 }
@@ -337,7 +334,8 @@ static void HighlightFooterTab(void) {
 /* Glow the L/R navigation arrows yellow, matching the original game's
  * animated tab indicator. Col 10 = left arrow (L), col 21 = right arrow (R).
  * Cycles palette 0 (gold #FFB500 at tone 1) and palette 6 (bright yellow
- * #F7E700 at tone 11) every 4 frames each. */
+ * #F7E700 at tone 11) every 4 frames each. The phase is advanced once per
+ * game frame in SmPauseOptions_GuestTick; this function only applies it. */
 static void GlowFooterLr(void) {
   static const uint8_t kGlowPalettes[] = { 0u, 0u, 0u, 0u, 6u, 6u, 6u, 6u };
   uint16_t *cells = (uint16_t *)(g_ram + 0x3000);
@@ -356,18 +354,16 @@ static void GlowFooterLr(void) {
     uint16_t entry = cells[idx];
     cells[idx] = (uint16_t)((entry & 0xFCFFu) | ((unsigned)pal << 10));
   }
-  s_glow_phase++;
 }
 
 /* Leave the panel for a ROM screen, starting from the fade-out. */
 static void LeaveTo(uint16 fade_out_state, uint16 label_mode) {
   menu_index = fade_out_state;
   pausemenu_button_label_mode = label_mode;
-  /* The footer tilemap copy needs refreshing for the target tab's labels,
-   * with the target tab highlighted and the L/R arrows glowing. */
+  /* The footer tilemap copy needs refreshing for the target tab's labels.
+   * Tab highlighting and L/R arrow glow are applied each frame in DrawPanel,
+   * after the guest's own pause routine has run its palette animations. */
   SmRomPauseFooterUpdate();
-  HighlightFooterTab();
-  GlowFooterLr();
 }
 
 void SmPauseOptions_GuestTick(void) {
@@ -387,6 +383,10 @@ void SmPauseOptions_GuestTick(void) {
   const uint16 pressed = joypad1_newkeys;
 
   SmPauseOptions_SyncToGuest();
+  if (SmPauseOptions_IsActive())
+    /* Advance the L/R arrow glow phase once per game frame. Drawn later in
+     * DrawPanel, after the guest's pause routine has run its animations. */
+    s_glow_phase++;
   if (SmPauseOptions_IsActive() && Leaving()) {
     ConsumePad(kPanelOwned);
     return;
@@ -407,14 +407,10 @@ void SmPauseOptions_GuestTick(void) {
   }
 
   ConsumePad(kPanelOwned);
-  /* Refresh the guest's footer tilemap copy from the ROM each frame so the
-   * tab strip always has the current base labels, then highlight the active
-   * tab's label cells and glow the L/R navigation arrows. The guest's own
-   * pause routine runs after this tick and can then apply palette animations
-   * on top. */
-  SmRomPauseFooterUpdate();
-  HighlightFooterTab();
-  GlowFooterLr();
+  /* The guest's own pause routine runs after this tick and keeps the footer
+   * tilemap current between frames, including palette animations. The panel
+   * applies tab highlighting and L/R arrow glow right before drawing, in
+   * DrawPanel. */
   if (pressed & kButton_R) {
     /* R always navigates toward Equipment/Samus, matching the ROM's behavior
      * on the Map screen (R -> Equipment). */
@@ -568,7 +564,10 @@ static void DrawPanel(uint32_t *dst, int stride, int width, int height) {
    * place -- nothing host-drawn. The footer tilemap copy at g_ram+0x3000 is
    * refreshed when the panel opens or changes tabs (see SmPauseOptions_SetActive
    * and LeaveTo); the guest's own pause routine keeps it current between frames,
-   * including palette animations. The 8px row below it (tilemap row 27) stays
-   * the panel background. */
+   * including palette animations. Apply tab highlighting and L/R arrow glow
+   * here, right before drawing, after the guest's routine has run. The 8px row
+   * below it (tilemap row 27) stays the panel background. */
+  HighlightFooterTab();
+  GlowFooterLr();
   SmRomPauseFooterDraw(dst, stride, width, height, extra, game_height - 24);
 }
