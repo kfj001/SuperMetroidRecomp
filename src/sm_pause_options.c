@@ -190,18 +190,30 @@ static RecompRuntimeUi *Ui(void) {
  * tab's cells switch to palette 3 for a lit highlight. */
 static void HighlightFooterTab(void);
 
+/* Glow the L/R navigation arrows yellow, matching the original game's
+ * animated tab indicator. Cycles palette 0 (gold #FFB500 at tone 1) and
+ * palette 6 (bright yellow #F7E700 at tone 11) every 4 frames. Col 10 =
+ * left arrow (L), col 21 = right arrow (R). The phase resets to 0 whenever
+ * the panel opens so the animation starts consistently. */
+static int s_glow_phase;
+static void GlowFooterLr(void);
+static void GlowFooterLrReset(void) { s_glow_phase = 0; }
+
 void SmPauseOptions_SetActive(bool active) {
   RecompRuntimeUi *ui = Ui();
   if (!ui || active == (recomp_runtime_ui_is_open(ui) != 0)) return;
   g_leave = false;
   if (active) {
     recomp_runtime_ui_open_section(ui, kSection);
-    /* Populate the guest's footer tilemap copy from the ROM and highlight the
-     * active tab's label cells so the tab strip shows the correct labels for
-     * the screen the panel is opening over. The guest's own pause routine
-     * keeps it current between frames, including palette animations. */
+    /* Populate the guest's footer tilemap copy from the ROM, highlight the
+     * active tab's label cells, and start the L/R arrow glow animation so
+     * the tab strip shows the correct labels for the screen the panel is
+     * opening over. The guest's own pause routine keeps it current between
+     * frames, including palette animations. */
     SmRomPauseFooterUpdate();
     HighlightFooterTab();
+    GlowFooterLrReset();
+    GlowFooterLr();
   } else
     recomp_runtime_ui_close(ui);
 }
@@ -322,14 +334,40 @@ static void HighlightFooterTab(void) {
   }
 }
 
+/* Glow the L/R navigation arrows yellow, matching the original game's
+ * animated tab indicator. Col 10 = left arrow (L), col 21 = right arrow (R).
+ * Cycles palette 0 (gold #FFB500 at tone 1) and palette 6 (bright yellow
+ * #F7E700 at tone 11) every 4 frames each. */
+static void GlowFooterLr(void) {
+  static const uint8_t kGlowPalettes[] = { 0u, 0u, 0u, 0u, 6u, 6u, 6u, 6u };
+  uint16_t *cells = (uint16_t *)(g_ram + 0x3000);
+  const unsigned base = 25u * 32u;  /* kPauseFooterRow * kPauseTilemapCols */
+  const uint8_t pal =
+      kGlowPalettes[s_glow_phase % (sizeof(kGlowPalettes) / sizeof(kGlowPalettes[0]))];
+  /* Left arrow (L) at col 10. */
+  {
+    unsigned idx = base + 10u;
+    uint16_t entry = cells[idx];
+    cells[idx] = (uint16_t)((entry & 0xFCFFu) | ((unsigned)pal << 10));
+  }
+  /* Right arrow (R) at col 21. */
+  {
+    unsigned idx = base + 21u;
+    uint16_t entry = cells[idx];
+    cells[idx] = (uint16_t)((entry & 0xFCFFu) | ((unsigned)pal << 10));
+  }
+  s_glow_phase++;
+}
+
 /* Leave the panel for a ROM screen, starting from the fade-out. */
 static void LeaveTo(uint16 fade_out_state, uint16 label_mode) {
   menu_index = fade_out_state;
   pausemenu_button_label_mode = label_mode;
   /* The footer tilemap copy needs refreshing for the target tab's labels,
-   * with the target tab highlighted. */
+   * with the target tab highlighted and the L/R arrows glowing. */
   SmRomPauseFooterUpdate();
   HighlightFooterTab();
+  GlowFooterLr();
 }
 
 void SmPauseOptions_GuestTick(void) {
@@ -371,10 +409,12 @@ void SmPauseOptions_GuestTick(void) {
   ConsumePad(kPanelOwned);
   /* Refresh the guest's footer tilemap copy from the ROM each frame so the
    * tab strip always has the current base labels, then highlight the active
-   * tab's label cells. The guest's own pause routine runs after this tick
-   * and can then apply palette animations on top. */
+   * tab's label cells and glow the L/R navigation arrows. The guest's own
+   * pause routine runs after this tick and can then apply palette animations
+   * on top. */
   SmRomPauseFooterUpdate();
   HighlightFooterTab();
+  GlowFooterLr();
   if (pressed & kButton_R) {
     /* R always navigates toward Equipment/Samus, matching the ROM's behavior
      * on the Map screen (R -> Equipment). */

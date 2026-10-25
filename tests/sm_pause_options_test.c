@@ -329,15 +329,15 @@ int main(void) {
   Frame(kButton_Down, 0);   /* Aspect ratio */
   Frame(kButton_Right, 0);  /* Fit wraps to 4:3 */
   assert(g_sm_video.aspect == SM_ASPECT_STOCK);
-  HashCheck(256, 0x070CE788u);
-  HashCheck(684, 0x69F8F8B0u);
+  HashCheck(256, 0x4BC7DA79u);
+  HashCheck(684, 0x765FEB99u);
   Frame(kButton_Right, 0);
   Frame(kButton_Left, 0);
   assert(g_sm_video.aspect == SM_ASPECT_STOCK);
   Frame(kButton_A, 0);      /* accept steps a choice forward */
   assert(g_sm_video.aspect == SM_ASPECT_16_9);
-  HashCheck(256, 0xEF33A956u);
-  HashCheck(342, 0x8E10D4D4u);
+  HashCheck(256, 0x79AD8DF3u);
+  HashCheck(342, 0xF202E57Fu);
 
   /* Turning widescreen on brings HUD anchoring up, from either direction. */
   Frame(kButton_Up, 0);     /* Presentation FPS */
@@ -354,12 +354,11 @@ int main(void) {
   Frame(kButton_Down, 0);   /* Presentation FPS */
   Frame(kButton_Down, 0);   /* Aspect ratio */
   Frame(kButton_Down, 0);   /* Fullscreen */
-  HashCheck(256, 0x455E4080u);
-  HashCheck(684, 0x0BE11538u);
+  HashCheck(256, 0xAF7E54C1u);
+  HashCheck(684, 0x84099E51u);
   Frame(kButton_Right, 0);  /* Borderless */
   assert(f_fullscreen == 1 && g_config_dirty);
   HashCheck(256, 0x45D6E923u);
-
   /* VSync is a three-way choice that wraps at both ends. */
   Frame(kButton_Down, 0);   /* VSync */
   Frame(kButton_Right, 0);
@@ -368,7 +367,7 @@ int main(void) {
   assert(f_vsync == 0);                     /* Off */
   Frame(kButton_Right, 0);
   assert(f_vsync == 1);                     /* back to On */
-  HashCheck(256, 0x83136A15u);
+  HashCheck(256, 0xE9995814u);
 
   /* Frame blend toggles on a fresh press, either direction. */
   Frame(kButton_Down, 0);   /* Frame blend */
@@ -376,7 +375,7 @@ int main(void) {
   assert(f_frame_blend == 1 && g_config_dirty);
   Frame(kButton_A, 0);
   assert(f_frame_blend == 0);
-  HashCheck(256, 0x1EAF140Bu);
+  HashCheck(256, 0xB1E29996u);
 
   /* Run ahead counts 0..4 and stops at the ends. */
   Frame(kButton_Down, 0);   /* Run ahead */
@@ -387,7 +386,7 @@ int main(void) {
   assert(f_run_ahead == 4);
   Frame(kButton_Right, 0);
   assert(f_run_ahead == 4);
-  HashCheck(256, 0x44FFC0C1u);
+  HashCheck(256, 0x09BB7588u);
   Frame(kButton_Left, 0);
   assert(f_run_ahead == 3);
   Frame(kButton_Left, 0);
@@ -401,15 +400,15 @@ int main(void) {
   /* Still borderless, so Window scale is disabled: navigation skips it and
    * lands on Exit. */
   Frame(kButton_Down, 0);   /* Run ahead -> Exit */
-  HashCheck(256, 0x107332B1u);
-  HashCheck(684, 0x55CC10E1u);
+  HashCheck(256, 0xFE6B9FB8u);
+  HashCheck(684, 0xD2844AD0u);
   Frame(kButton_A, 0);      /* graceful exit */
   assert(f_exit_requested);
-  HashCheck(256, 0x107332B1u);       /* the action changes nothing visible */
+  HashCheck(256, 0xFE6B9FB8u);       /* the action changes nothing visible */
 
   /* Down to Back, up again to Fullscreen (over the disabled scale row). */
   Frame(kButton_Down, 0);   /* Back to map */
-  HashCheck(256, 0x5EDE4875u);
+  HashCheck(256, 0x57B589B4u);
   Frame(kButton_Up, 0);
   Frame(kButton_Up, 0);
   Frame(kButton_Up, 0);
@@ -417,7 +416,7 @@ int main(void) {
   Frame(kButton_Up, 0);     /* Fullscreen */
   Frame(kButton_Left, 0);   /* Windowed */
   assert(f_fullscreen == 0 && g_config_dirty);
-  HashCheck(256, 0x455E4080u);
+  HashCheck(256, 0xAF7E54C1u);
 
   /* Window scale, enabled again, counts 1..10. */
   Frame(kButton_Down, 0);   /* VSync */
