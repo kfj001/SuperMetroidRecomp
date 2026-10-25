@@ -318,6 +318,51 @@ void SmRomPauseFooterUpdate(void) {
   }
 }
 
+/* Repaint the L/R navigation buttons' gray backdrop with `color`.
+ *
+ * In the cartridge the buttons pulse because the pause routine animates a
+ * CGRAM palette each frame (HandlePauseScreenPaletteAnimation, $82:A92B,
+ * cycling kPauseAnimatedPalette at $82:A987 into palette 11) together with a
+ * highlight sprite over them ($82:A59A). That animation lives in the guest's
+ * PPU, hidden under the panel, so the host reproduces it: the pill body of
+ * the $B6:8000 tileset is tones 14 (#BDBDBD rim) and 15 (#636363 body), and
+ * exactly those pixels are repainted; the arrow glyph (tones 10/12/13) and
+ * every other footer cell are left alone. The guest's label-palette routine
+ * patches only the window's top edge, so the pills always decode to the same
+ * two grays, even when the host's tab highlight switches their entries to
+ * palette 3. */
+void SmRomPauseFooterGlowDraw(uint32_t *dst, int stride, int width, int height,
+                              int x, int y, uint32_t color) {
+  if (!dst || stride <= 0) return;
+  const uint16_t *cells = (const uint16_t *)(g_ram + 0x3000);
+  const unsigned base = kPauseFooterRow * kPauseTilemapCols;
+  /* The two pills: L is footer cols 1-4, R is 27-30. The caps, labels and
+   * separators around them never glow. */
+  static const int kPillCols[] = {1, 2, 3, 4, 27, 28, 29, 30};
+  for (int r = 0; r < kPauseFooterRows; ++r) {
+    for (unsigned i = 0; i < sizeof(kPillCols) / sizeof(kPillCols[0]); ++i) {
+      const int c = kPillCols[i];
+      const unsigned entry = cells[base + r * kPauseTilemapCols + (unsigned)c];
+      const unsigned tile = entry & 0x3FFu;
+      const int hflip = (entry >> 14) & 1;
+      const int vflip = (entry >> 15) & 1;
+      for (int row = 0; row < 8; ++row) {
+        const int py = y + r * 8 + row;
+        if (py < 0 || py >= height) continue;
+        const int sy = vflip ? 7 - row : row;
+        for (int col = 0; col < 8; ++col) {
+          const int px = x + c * 8 + col;
+          if (px < 0 || px >= width) continue;
+          const int sx = hflip ? 7 - col : col;
+          const unsigned tone = RomTilePixelAt(0xB6, kFrameTileBase, tile,
+                                               (unsigned)sx, (unsigned)sy, 4);
+          if (tone == 14u || tone == 15u) dst[py * stride + px] = color;
+        }
+      }
+    }
+  }
+}
+
 /* ── guest HUD ─────────────────────────────────────────────────────────
  *
  * The Map and Equipment pause screens leave the gameplay HUD up along the top

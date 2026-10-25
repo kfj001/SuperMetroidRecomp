@@ -47,6 +47,16 @@ void SmRomPauseFooterDraw(uint32_t *dst, int stride, int width, int height,
  * frames, including palette animations (glow/pulse). */
 void SmRomPauseFooterUpdate(void);
 
+/* Repaint the L/R navigation buttons' gray backdrop (footer cols 1-4 and
+ * 27-30, tile tones 14/15 of the $B6:8000 tileset, read in place) with
+ * `color`, leaving the arrow glyph and every other footer cell alone. The
+ * host's stand-in for the game's per-frame button palette animation, which
+ * the panel composites over.
+ * dst/stride/width/height: output framebuffer (ARGB8888) and dimensions.
+ * x,y: top-left destination of the strip, as in SmRomPauseFooterDraw. */
+void SmRomPauseFooterGlowDraw(uint32_t *dst, int stride, int width, int height,
+                              int x, int y, uint32_t color);
+
 /* Draw the guest's pause-screen HUD from its BG3 tilemap (32 columns x 3 rows;
  * `cells` points at the guest copy in WRAM). The Map and Equipment pause
  * screens show this same HUD along the top edge. BG3 is 2bpp in Mode 1, so
