@@ -23,6 +23,13 @@ effects, and follows the terrain's interpolated raster camera.
 Extended enemy spritemaps identify BG2 tilemap children with `$FFFE`. These
 are sampled as one canvas containing their verified owner, rather than
 repeating a Mother Brain or Crocomire body every hardware tilemap width.
+Crocomire's ROM additionally parks BG2 at horizontal scroll256 outside the
+native view. Margin sampling reconstructs his unclamped position from the
+verified ROM owner instead of wrapping that hidden layer onto the edge.
+Crossing into or out of that parked state also uses owner interpolation;
+blending the parking register would slide the body in the wrong direction.
+The native raster is preserved. Tests cover both sides, four widths and
+intermediate phases, including moving across the original culling threshold.
 Samus's separate cannon sprite is verified against the original pose,
 animation-offset and character tables before receiving body interpolation.
 Native gameplay pixels and guest simulation are unchanged.
