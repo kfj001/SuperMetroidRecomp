@@ -209,8 +209,32 @@ static bool continuous_frames(const SmSourceFrame *old, const SmSourceFrame *now
 /* Match an actual Samus ROM map entry, not a screen proximity or OAM-slot
  * heuristic. Echoes, projectiles and reused reservations stay discrete unless
  * their coordinates and tile identity genuinely match the player map. */
+static bool samus_cannon_piece(const SmSourceFrame *f, unsigned position,
+                               unsigned attr, unsigned high) {
+  const uint8_t *ram = f->object_ram;
+  unsigned pose = read16(ram, 0xa1c), frame = read16(ram, 0xa96);
+  unsigned arm = read16(ram, 0xaa8), mode = read16(ram, 0xaac) & 15;
+  if ((attr & 0x3fff) != 0x281f || (high & 3) || !f->object_state_valid ||
+      pose >= 253 || frame >= 64 || !arm || arm > 4 || (mode != 1 && mode != 2)) return false;
+  /* $90:C663 emits this separate 8x8 piece; it is not in either $92 Samus
+   * body map. Verify its pose/animation offset and exact character flags. */
+  const uint8_t *table = rom_bytes(0x90, 0xc7df + pose * 2, 2);
+  const uint8_t *params = rom_bytes(0x91, 0xb629 + pose * 8, 8);
+  if (!table || !params) return false;
+  unsigned address = read16(table, 0);
+  const uint8_t *data = rom_bytes(0x90, address, 3);
+  if (!data) return false;
+  unsigned direction = (data[0] & 128) && frame ? data[2] & 127 : data[0] & 127;
+  const uint8_t *character = rom_bytes(0x90, 0xc791 + direction * 2, 2);
+  const uint8_t *offset = rom_bytes(0x90, address + (data[0] & 128 ? 4 : 2) + frame * 2, 2);
+  if (direction >= 10 || !character || !offset || read16(character, 0) != attr) return false;
+  int x = (int16_t)(uint16_t)(read16(ram, 0xaf6) - read16(ram, 0x911) + (int8_t)offset[0]);
+  int y = (int16_t)(uint16_t)(read16(ram, 0xafa) - read16(ram, 0x915) - params[4] + (int8_t)offset[1]);
+  return x >= 0 && x < 256 && y >= 0 && y < 256 && position == (unsigned)(x | (y << 8));
+}
 static bool samus_piece(const SmSourceFrame *f, unsigned position,
                         unsigned attr, unsigned high) {
+  if (samus_cannon_piece(f, position, attr, high)) return true;
   for (unsigned half = 0; half < 2; ++half) {
     unsigned index = read16(f->object_ram, 0xac8 + half * 2);
     if (index > 0x7fff || (half && !index)) continue;
@@ -681,15 +705,57 @@ bool SmRendererXrayBlocks(const uint8_t ram[0x20000], uint16_t blocks[0x3200]) {
   return true;
 }
 
+typedef struct SmBg2Object { bool valid; int x, y; } SmBg2Object;
+/* Extended spritemaps explicitly tag BG2 tilemap children with $FFFE
+ * ($A0:944A/$96CA). Their tilemap is one moving object, not repeating room
+ * scenery. Derive ownership from that ROM format rather than boss IDs. */
+static SmBg2Object bg2_object(const SmSourceFrame *f, const SmSourceFrame *old, double alpha) {
+  SmBg2Object result = {0};
+  if (!f->object_state_valid) return result;
+  for (unsigned slot = 0; slot < 32; ++slot) {
+    const uint8_t *e = f->object_ram + 0xf78 + slot * 64;
+    if (!read16(e, 0) || (read16(e, 14) & 0x300) || !(read16(e, 16) & 4)) continue;
+    unsigned bank = e[46], map = read16(e, 22);
+    const uint8_t *data = rom_bytes(bank, map, 2);
+    if (!data) continue;
+    unsigned n = read16(data, 0);
+    if (!n || n > 64 || !(data = rom_bytes(bank, map + 2, n * 8))) continue;
+    bool tilemap = false;
+    for (unsigned i = 0; i < n; ++i) {
+      const uint8_t *child = rom_bytes(bank, read16(data + i * 8, 4), 2);
+      tilemap |= child && read16(child, 0) == 0xfffe;
+    }
+    if (!tilemap) continue;
+    int x = (int)read16(e, 2) - (int)read16(f->object_ram, 0x911);
+    int y = (int)read16(e, 6) - (int)read16(f->object_ram, 0x915);
+    int dx, dy;
+    if (alpha < 1 && enemy_motion(f, old, slot, &dx, &dy)) {
+      x = lerp_pixel(x + dx, x, alpha); y = lerp_pixel(y + dy, y, alpha);
+    }
+    if (result.valid && (result.x != x || result.y != y)) return (SmBg2Object){0};
+    result = (SmBg2Object){true, x, y};
+  }
+  return result;
+}
+
 typedef struct SmBackgroundLine {
   int shift, size, scroll_x, scroll_y, world_x, world_y, bpp;
   int room_width, room_height, camera_x, camera_y;
   unsigned layer, sc, base, low, high;
   const uint8_t *room;
   const uint16_t *revealed;
+  bool screen_space;
+  bool object_canvas;
+  int canvas_x, canvas_y, canvas_width, canvas_height;
 } SmBackgroundLine;
+/* Bit 11 is unused by the priority/layer/palette pixel encoding. A cleared
+ * HUD plane is opaque black, unlike a transparent subscreen backdrop which
+ * asks color math to use COLDATA. Keep that distinction without inventing a
+ * palette index or exposing repeated HUD texels in the wider view. */
+enum { SM_PIXEL_OPAQUE_BLACK = 0x0800 };
 
-static SmBackgroundLine background_line(const Ppu *p, const uint8_t *room, unsigned layer) {
+static SmBackgroundLine background_line(const Ppu *p, const uint8_t *room, unsigned layer,
+                                        SmBg2Object object) {
   static const unsigned low[] = {8, 7, 1}, high[] = {12, 11, 3};
   SmBackgroundLine b = {0};
   b.layer = layer;
@@ -697,6 +763,19 @@ static SmBackgroundLine background_line(const Ppu *p, const uint8_t *room, unsig
   b.size = 1 << b.shift;
   b.scroll_x = p->hScroll[layer]; b.scroll_y = p->vScroll[layer];
   b.sc = p->bgXsc[layer];
+  /* $58/$5A select the same HUD/message tilemap with different heights.
+   * InitializeSpecialEffectsForNewRoom and InitializePpuForMessageBoxes
+   * select the HUD and dialogue sizes respectively.
+   * These remain screen-space even after the IRQ restores gameplay color
+   * math or a boss scrolls BG3. World FX use a separate map (normally $5C). */
+  b.screen_space = layer == 2 && (b.sc & 0xfc) == 0x58;
+  if (layer == 1 && object.valid && (room[0x91b] & 1)) {
+    b.object_canvas = true;
+    b.canvas_width = b.size * (b.sc & 1 ? 64 : 32);
+    b.canvas_height = b.size * (b.sc & 2 ? 64 : 32);
+    b.canvas_x = object.x - ((object.x + b.scroll_x) & (b.canvas_width - 1));
+    b.canvas_y = object.y - ((object.y + b.scroll_y) & (b.canvas_height - 1));
+  }
   b.bpp = layer == 2 ? 2 : 4;
   b.base = ((p->bgTileAdr >> (layer * 4)) & 15) * 4096;
   b.low = low[layer];
@@ -704,13 +783,14 @@ static SmBackgroundLine background_line(const Ppu *p, const uint8_t *room, unsig
   unsigned width = read16(room, 0x7a5), height = read16(room, 0x7a7);
   if (layer < 2 && width && height && (uint64_t)width * height <= 0x3200) {
     b.room_width = (int)width * 16; b.room_height = (int)height * 16;
-    b.camera_x = (int)read16(room, 0x911); b.camera_y = (int)read16(room, 0x915);
+    b.camera_x = (int16_t)read16(room, 0x911); b.camera_y = (int16_t)read16(room, 0x915);
+    b.world_x = b.camera_x; b.world_y = b.camera_y;
   }
   if (b.size == 8 && (layer == 0 || (layer == 1 && !(room[0x91b] & 1)))) {
     /* Native scroll includes ring-buffer offsets. Recover the raster delta
      * relative to the live camera, then sample decompressed world data. */
-    int camera_x = (int)read16(room, layer ? 0x917 : 0x911);
-    int camera_y = (int)read16(room, layer ? 0x919 : 0x915);
+    int camera_x = (int16_t)read16(room, layer ? 0x917 : 0x911);
+    int camera_y = (int16_t)read16(room, layer ? 0x919 : 0x915);
     int dx = ((int)p->hScroll[layer] - camera_x -
               (int)read16(room, layer ? 0x921 : 0x91d) + 512) & 1023;
     int dy = ((int)p->vScroll[layer] - camera_y -
@@ -724,19 +804,13 @@ static SmBackgroundLine background_line(const Ppu *p, const uint8_t *room, unsig
 
 static uint16_t background_pixel(const SmBackgroundLine *b, const uint16_t *vram,
                                  int x, int y, bool margin) {
-  /* Static/parallax BG2 still has hardware tilemap wrapping. Room edges
-   * apply to it as well as decompressed terrain: unused tilemap columns
-   * outside the authored room are not additional scenery. */
-  if (margin && b->room_width &&
-      (b->camera_x + x < 0 || b->camera_x + x >= b->room_width ||
-       b->camera_y + y < 0 || b->camera_y + y >= b->room_height)) return 0;
-  /* Gameplay can retain the HUD tilemap on the BG3 subscreen for color
-   * math. Its top four tile rows contain the minimap/status graphics, not
-   * repeating room art: wrapping negative X exposes the minimap's dotted
-   * bottom border across the left margin on the first post-IRQ line. Keep
-   * those HUD texels native-width, without clipping any gameplay row. */
-  if (margin && b->layer == 2 && b->sc == 0x5a &&
-      ((y + b->scroll_y) & 511) < 32) return 0;
+  /* Limit the UI layer itself, not gameplay scanlines: dialogue HDMA and
+   * scrolling can expose any row of this map through either screen. */
+  if (margin && b->screen_space)
+    return b->sc & 2 ? (uint16_t)((b->low << 12) | (2 << 8) | SM_PIXEL_OPAQUE_BLACK) : 0;
+  if (margin && b->object_canvas &&
+      (x < b->canvas_x || x >= b->canvas_x + b->canvas_width ||
+       y < b->canvas_y || y >= b->canvas_y + b->canvas_height)) return 0;
   int size = b->size;
   int px, py;
   unsigned tile;
@@ -1636,14 +1710,16 @@ static void grapple_pixels(const SmRasterLine *line, const Ppu *p, int y,
 
 static uint32_t colour(const Ppu *p, const uint16_t *palette, const uint8_t *brightness, uint16_t main,
                        uint16_t sub, bool inside) {
-  unsigned rgb = palette[main & 255], layer = (main >> 8) & 15;
+  unsigned rgb = main & SM_PIXEL_OPAQUE_BLACK ? 0 : palette[main & 255];
+  unsigned layer = (main >> 8) & 7;
   bool clipped = window_condition(p->cgwsel >> 6, inside);
   bool math = !window_condition((p->cgwsel >> 4) & 3, inside) &&
               ((p->cgadsub & 63) & (1u << layer));
   unsigned other = p->fixedColor;
   bool half = math && (p->cgadsub & 64) && !clipped;
   if (math && (p->cgwsel & 2)) {
-    if ((sub & 255) != 0) other = palette[sub & 255];
+    if (sub & SM_PIXEL_OPAQUE_BLACK) other = 0;
+    else if ((sub & 255) != 0) other = palette[sub & 255];
     else half = false;
   }
   uint32_t result = 0;
@@ -1679,6 +1755,13 @@ bool SmRendererDraw(uint32_t *out, SmViewport viewport, bool hud_anchored, doubl
   memset(out, 0, (size_t)viewport.width * 224 * sizeof(*out));
   unsigned state = read16(f->ram, 0x998);
   bool room = room_state(state);
+  SmBg2Object bg2 = bg2_object(f, previous, alpha);
+  int camera_x = (int16_t)read16(f->ram, 0x911);
+  int camera_y = (int16_t)read16(f->ram, 0x915);
+  if (previous && alpha < 1) {
+    camera_x = lerp_pixel((int16_t)read16(previous->ram, 0x911), camera_x, alpha);
+    camera_y = lerp_pixel((int16_t)read16(previous->ram, 0x915), camera_y, alpha);
+  }
   uint16_t objects[SM_MAX_WIDTH];
   uint8_t mode7_pixels[SM_MAX_WIDTH];
   SmWideWindow wide_windows[224];
@@ -1858,7 +1941,7 @@ bool SmRendererDraw(uint32_t *out, SmViewport viewport, bool hud_anchored, doubl
     SmBackgroundLine background_lines[3];
     if (mode == 1)
       for (unsigned layer = 0; layer < 3; ++layer)
-        background_lines[layer] = background_line(&scanout, f->ram, layer);
+        background_lines[layer] = background_line(&scanout, f->ram, layer, bg2);
     if (xray_reveal && mode == 1 && scanout.bgXsc[1] == 0x49 && scanout.windowsel == 0x8008c8) {
       background_lines[1].room = f->ram;
       background_lines[1].revealed = xray_blocks;
@@ -1884,12 +1967,25 @@ bool SmRendererDraw(uint32_t *out, SmViewport viewport, bool hud_anchored, doubl
     if (mode == 7)
       for (int sx = 0; sx < viewport.width; ++sx)
         mode7_pixels[sx] = SmMode7Sample(&transform, l->vram, sx - viewport.extra);
+    unsigned enabled = scanout.screenEnabled[0] | scanout.screenEnabled[1];
+    /* BG1 scroll is meaningful when terrain is enabled. Color-only and
+     * BG2-only effect lines can leave its registers stale. */
+    int matte_x = mode == 1 && (enabled & 1) ? background_lines[0].world_x : camera_x;
+    int matte_y = mode == 1 && (enabled & 1) ? background_lines[0].world_y : camera_y;
     for (int sx = 0; sx < viewport.width; ++sx) {
       int x = sx - viewport.extra;
+      /* The room matte owns the finished world pixel, including OBJ and
+       * liquid/window color math. Clipping only individual BG samples lets
+       * COLDATA and effects paint over the black side bars. Use the same
+       * raster/interpolated BG1 camera as terrain so the edge cannot wobble
+       * between simulation ticks and intermediate presentations. */
+      const SmBackgroundLine *world = &background_lines[0];
+      if (mode == 1 && (x < 0 || x >= 256) && world->room_width &&
+          (matte_x + x < 0 || matte_x + x >= world->room_width ||
+           matte_y + y + 1 < 0 || matte_y + y + 1 >= world->room_height)) continue;
       uint16_t screens[2] = {0x500, 0x500};
       uint16_t backgrounds[3] = {0, 0, 0};
       int layers = mode == 7 ? ((scanout.setini & 64) ? 2 : 1) : 3;
-      unsigned enabled = scanout.screenEnabled[0] | scanout.screenEnabled[1];
       /* Tile addressing/decoding is identical on main and sub. Cache it
        * before applying each screen's independent layer/window enables. */
       for (int layer = 0; layer < layers; ++layer) {

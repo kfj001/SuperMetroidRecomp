@@ -7,6 +7,34 @@ This is an experimental custom renderer. The requested worktree and Mods
 functionality is implemented; this is not a full-game visual-fidelity or
 sustained-performance certification.
 
+## October 25 feedback corrections
+
+HUD/dialogue BG3 maps remain screen-space through message HDMA and boss
+scrolling. Their empty HUD plane preserves opaque black for color math, so
+suppressing repeated UI texels does not expose power-bomb/boss fixed color.
+The authored room matte now clips the final world pixel, including liquid
+effects, and follows the terrain's interpolated raster camera.
+
+Extended enemy spritemaps identify BG2 tilemap children with `$FFFE`. These
+are sampled as one canvas containing their verified owner, rather than
+repeating a Mother Brain or Crocomire body every hardware tilemap width.
+Samus's separate cannon sprite is verified against the original pose,
+animation-offset and character tables before receiving body interpolation.
+Native gameplay pixels and guest simulation are unchanged.
+
+Regression fixtures cover moving UI tilemaps, opaque-black subscreen math,
+single BG2 canvases, color-only room edges, signed door cameras, intermediate
+camera phases and cannon ownership rejection. Thirteen real tester captures
+pass native-row-30-through-223 and complete HUD layout comparisons at four
+widths with both HUD settings (104 cases). An adjacent recorded post-grapple
+pair also verifies cannon ownership; simulation-rate output stays exact.
+These checks do not certify the entire game's margins or identify the precise
+reported file-selection/phantom-door transition. Those reports remain tracked.
+
+The isolated renderer QA harness uses dummy video/audio by default and the
+shared host's profiling controls. Audio emulation can remain enabled without
+speaker output.
+
 ## October 2026 feedback regressions
 
 The HUD's BG3 tilemap can remain on the color-math subscreen after the

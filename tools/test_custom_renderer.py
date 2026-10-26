@@ -118,13 +118,18 @@ def main() -> int:
             "[General]\nAutosave=0\nSkipLauncher=1\n"
             f"DisableFrameDelay={0 if paced else 1}\n"
             "[Graphics]\nWindowScale=2\nNewRenderer=1\nNoSpriteLimits=0\n"
-            f"[Sound]\nEnableAudio={int(args.audio)}\n",
+            f"[Sound]\nEnableAudio={int(args.audio)}\nVolume=0\n",
             encoding="utf-8")
         (directory / "sm-video.ini").write_text(
             f"[SuperMetroidVideo]\nEnhancedRenderer={int(wide)}\n"
             f"Aspect=32:9\nPresentationEnabled={int(paced)}\n"
             f"PresentationFPS={args.fps}\nHudAnchored=1\n", encoding="utf-8")
         env = os.environ.copy()
+        # Automated QA preserves desktop focus and emulates audio silently.
+        # SDL2 and SDL3 use different spellings; set both explicitly.
+        env.update(SDL_VIDEODRIVER='dummy', SDL_VIDEO_DRIVER='dummy',
+                   SDL_AUDIODRIVER='dummy', SDL_AUDIO_DRIVER='dummy',
+                   SM_REPLAY_RECORD='0')
         # Diagnostic overrides from an interactive shell must not contaminate
         # the controlled run. Each executable process owns its own directory.
         for key in list(env):
@@ -133,6 +138,8 @@ def main() -> int:
         env.pop("SNESRECOMP_WIDESCREEN", None)
         env.pop("SM_PROFILE", None)
         env.pop("SM_PROFILE_START_FRAME", None)
+        env.pop("SNESRECOMP_HOST_PROFILE", None)
+        env.pop("SNESRECOMP_HOST_PROFILE_START_FRAME", None)
         env.pop("SM_DMA_TRACE", None)
         env.pop("SM_XRAY_TILE_REPORT", None)
         if args.capture_power_bomb:
@@ -147,8 +154,8 @@ def main() -> int:
         if args.capture_rotation and wide:
             env['SM_CAPTURE_ROTATION_PREFIX'] = 'rotation'
         if args.profile:
-            env["SM_PROFILE"] = "1"
-            env["SM_PROFILE_START_FRAME"] = str(args.profile_start_frame)
+            env["SNESRECOMP_HOST_PROFILE"] = "1"
+            env["SNESRECOMP_HOST_PROFILE_START_FRAME"] = str(args.profile_start_frame)
         env["SM_RUN_FRAMES"] = str(args.frames)
         env["SM_STATE_TRACE"] = "state.csv"
         env["SNESRECOMP_DEBUG_PORT"] = str(4395 + index)
@@ -246,7 +253,9 @@ def main() -> int:
                 "presentation_hz": int(window[4]) / float(window[3]),
             }
             stages = re.findall(r"video profile: stage=(\S+) count=(\d+) total_ms=([\d.]+) mean_ms=([\d.]+) max_ms=([\d.]+) max_frame=(\d+)", log)
-            if len(stages) != 6:
+            required = {'guest', 'raster-capture', 'surface-acquire', 'compose',
+                        'upload-present', 'state-trace'}
+            if not required.issubset({s[0] for s in stages}) or len(stages) != len({s[0] for s in stages}):
                 raise RuntimeError(f"{name}: missing stage profiling output")
             report["runs"][name]["profile"] = {
                 stage: {"count": int(count), "total_ms": float(total),
@@ -255,6 +264,10 @@ def main() -> int:
                 for stage, count, total, mean, maximum, max_frame in stages
             }
             for stage, values in report["runs"][name]["profile"].items():
+                if stage not in required:
+                    if values['count'] and not args.profile_start_frame <= values['max_frame'] <= args.frames:
+                        raise RuntimeError(f'{name}: invalid {stage} profiling frame')
+                    continue
                 expected_count = args.frames - args.profile_start_frame + 1 if stage in (
                     "guest", "raster-capture", "state-trace") else int(window[4])
                 if values["count"] != expected_count or not args.profile_start_frame <= values["max_frame"] <= args.frames:
