@@ -120,6 +120,12 @@ def main() -> int:
             "[Graphics]\nWindowScale=2\nNewRenderer=1\nNoSpriteLimits=0\n"
             f"[Sound]\nEnableAudio={int(args.audio)}\nVolume=0\n",
             encoding="utf-8")
+        # Scripted presses own the guest. A user typing in another app must
+        # not inject Start or a gamepad movement into a background QA run.
+        with (directory / 'config.ini').open('a', encoding='utf-8') as config:
+            config.write('\n[Controller]\nSourceP1=0\nSourceP2=0\nSourceP3=0\nSourceP4=0\n'
+                         '[GamepadMap]\nEnableGamepad1=false\nEnableGamepad2=false\n'
+                         'EnableGamepad3=false\nEnableGamepad4=false\n')
         (directory / "sm-video.ini").write_text(
             f"[SuperMetroidVideo]\nEnhancedRenderer={int(wide)}\n"
             f"Aspect=32:9\nPresentationEnabled={int(paced)}\n"
@@ -158,7 +164,7 @@ def main() -> int:
             env["SNESRECOMP_HOST_PROFILE_START_FRAME"] = str(args.profile_start_frame)
         env["SM_RUN_FRAMES"] = str(args.frames)
         env["SM_STATE_TRACE"] = "state.csv"
-        env["SNESRECOMP_DEBUG_PORT"] = str(4395 + index)
+        env["SNESRECOMP_DEBUG_PORT"] = '0'
         env["SM_CAPTURE_FRAME"] = str(args.frames)
         env["SM_CAPTURE_PATH"] = "final.capture"
         env["SNESRECOMP_FRAME_BMP"] = "final.bmp"
