@@ -211,6 +211,13 @@ static unsigned policy(void) {
   return g_sm_video.enhanced | g_sm_video.fps_enabled<<1 | g_sm_video.hud_anchored<<2 |
       snesrecomp_desktop_new_renderer()<<3 | g_config.no_sprite_limits<<4 | rtl_apu_extended_frame_timing()<<5;
 }
+static bool replay_floor_active(void) {
+  /* Policy labels select registered replacements, not the SM scheduler.
+   * With none registered, on/force/auto (and legacy hle) still execute the
+   * same faithful guest and can use its recording format. */
+  return snesrecomp_execution_publishes_floor(snesrecomp_execution_policy()) ||
+      snesrecomp_execution_optimization_count() == 0;
+}
 static bool load_playback(void) {
   char line[512], version[80], revision[80], engine[80], target[80], tail;
   unsigned rom;
@@ -225,8 +232,8 @@ static bool load_playback(void) {
     error("different runtime build or target; use the recording's exact release and platform");return false;
   }
   if(!g_snes || !g_snes->cart || rom!=rom_identity) {error("different source ROM");return false;}
-  if(snesrecomp_execution_mode(SNESRECOMP_EXECUTION_MODE_LLE)!=SNESRECOMP_EXECUTION_MODE_LLE || snes_runahead_active()) {
-    error("replay requires the recorded LLE execution mode and run-ahead disabled");return false;
+  if(!replay_floor_active() || snes_runahead_active()) {
+    error("replay requires faithful guest execution and run-ahead disabled");return false;
   }
   char sidecar[1400]; snprintf(sidecar,sizeof(sidecar),"%s.sav",path);
   states=fopen(sidecar,"rb");
@@ -279,9 +286,9 @@ bool SmReplayBegin(uint32_t *inputs) {
   const char *why=SnesReplayWriterError(writer);
   if(why) {error(why);return true;}
   if(snes_runahead_active() || RtlSpeculativeFrame() ||
-      snesrecomp_execution_mode(SNESRECOMP_EXECUTION_MODE_LLE)!=SNESRECOMP_EXECUTION_MODE_LLE) {
+      !replay_floor_active()) {
     static bool warned;
-    if(!warned)fprintf(stderr,"[sm-replay] capture suspended: requires LLE execution and run-ahead disabled\n");
+    if(!warned)fprintf(stderr,"[sm-replay] capture suspended: requires faithful guest execution and run-ahead disabled\n");
     warned=true; close_segment();return true;
   }
   unsigned frame=(unsigned)snes_frame_counter;
