@@ -131,7 +131,7 @@ class Session:
         # differently, so set both.
         env.update(SDL_AUDIODRIVER='dummy', SDL_AUDIO_DRIVER='dummy',
                    SDL_VIDEODRIVER='dummy', SDL_VIDEO_DRIVER='dummy',
-                   SNESRECOMP_DEBUG_PORT=str(port))
+                   SNESRECOMP_DEBUG_PORT=str(port), SNESRECOMP_CPU_TRACE_RING_ENTRIES='65536')
         self.capture_profile = capture_profile
         if capture_profile:
             env.update(SNESRECOMP_TIER2_CAPTURE='1',

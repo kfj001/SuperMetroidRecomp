@@ -35,31 +35,11 @@ static void sm_no_recompiled_code(const char *what) {
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "fiber_compat.h"   /* Win32 Fibers on Windows, ucontext shim on POSIX */
-
-/* ── Super Metroid host frame driver ─────────────────────────────────
- *
- * Unlike MMX's 7-slot cooperative scheduler, Super Metroid runs as a
- * single linear program: reset ($80:841C, Vector_RESET) falls into the
- * main game loop ($82:8948, RunOneFrameOfGame in the decomp), which
- * dispatches the current game state and then waits for vblank via
- * WaitForNMI ($80:8338). WaitForNMI is called from arbitrary call depth
- * (game-state handlers, door transitions, cutscenes — see the
- * COROUTINE_AWAIT sites the snesrev/sm decomp threads through it), and
- * reset itself waits on NMI during its boot delays. So the whole game
- * runs on ONE host fiber; WaitForNMI yields it back to the host, the
- * host emulates the frame (NMI + PPU), then resumes the fiber exactly
- * after the yield — preserving the full C call stack the way a fiber
- * does and a longjmp cannot.
- *
- * WaitForNMI ($80:8338) is HLE-replaced (bank00.cfg `hle_func 8338
- * HleSmWaitForNmi`); the HLE body in gen_stubs.c calls sm_host_yield(). */
-
-/* Saved architectural register file across a fiber switch. g_cpu is a
- * global; the host's I_NMI run and the game's main-line code share it,
- * so each side's 65816 register state must be saved/restored around the
- * SwitchToFiber (same rationale as mmx_rtl.c's per-slot CpuState save —
- * runtime-flag-gated codegen reads m_flag/x_flag widths). */
+/* Every policy uses the interruptible guest frame scheduler. Promoted
+ * replacements are selected by the shared policy at their own call sites;
+ * a policy name must not switch the title to a different execution model.
+ * NMI shares g_cpu with main-line execution, so preserve its register file
+ * and native tailcall context around the host-injected interrupt. */
 typedef struct SmCpuSave {
   uint16_t A, X, Y, S, D;
   uint8_t  DB, PB, P;
@@ -90,18 +70,9 @@ static void sm_restore_cpu(CpuState *c, const SmCpuSave *s) {
 
 uint16 counter_global_frames;
 
-static void *g_host_fiber = NULL;   /* main thread, promoted to a fiber  */
-static void *g_game_fiber = NULL;   /* the game's fiber (entry = I_RESET)*/
-static SmCpuSave g_game_saved;      /* game CPU state at its last yield  */
 static bool g_game_started = false;
 static bool g_game_done = false;
 static uint32_t g_lle_resume_pc = 0x808343u;
-
-static SnesrecompExecutionMode sm_execution_mode(void) {
-  /* LLE is the correctness floor; HLE remains an explicit optimization mode
-   * selected through the shared runtime option. */
-  return snesrecomp_execution_mode(SNESRECOMP_EXECUTION_MODE_LLE);
-}
 
 static int sm_rtl_diag_enabled(void) {
   static int s_init = 0, s_enabled = 0;
@@ -118,17 +89,41 @@ static int sm_rtl_diag_enabled(void) {
  * through g_cpu. A same-process load can hide the omission; a fresh launch
  * otherwise resumes reset over restored WRAM. Use the framework's versioned,
  * pointer-free execution residue, never a serialized host fiber or C stack.
- * HLE fiber snapshots retain their historical limitations: there is no
- * portable on-disk representation of a suspended native call chain. */
+ * No host stack or pointer is part of a file snapshot. */
 #define SM_FILE_STATE_MAGIC 0x534D4653u  /* SMFS */
 static uint32_t g_loaded_file_state[7];
 static bool g_loaded_file_state_valid;
 
+const char *SmSnapshotIdentity(void) {
+#ifdef SM_SNAPSHOT_ID
+  return SM_SNAPSHOT_ID;
+#else
+  return "sm2-development";
+#endif
+}
+
+/* The framework verifies build identity and CRC first. Validate the title
+ * extension before the common loader writes any guest bytes as well. The
+ * canonical SM cartridge has no Cx4 execution-clock suffix. */
+bool SmSnapshotPreflight(const void *data, size_t size) {
+  uint32_t version, header[7], stream_version, execution_size;
+  size_t guest = RtlSnapshotGuestSize(&version);
+  if (!data || size < 8 || !guest || guest > size || size - guest < sizeof(header) + 4)
+    return false;
+  memcpy(&stream_version, (const uint8_t *)data + 4, 4);
+  memcpy(header, (const uint8_t *)data + guest, sizeof(header));
+  if (stream_version != version || header[0] != SM_FILE_STATE_MAGIC || header[1] != 2 ||
+      header[2] > 0xFFFFFFu || header[3] > 1 || header[4] > 1 ||
+      header[6] != SmSpcPlayer_StateSize()) return false;
+  memcpy(&execution_size, (const uint8_t *)data + guest + sizeof(header), 4);
+  size_t tail = size - guest - sizeof(header) - 4;
+  return execution_size >= 8 && execution_size <= tail &&
+      tail - execution_size == header[6];
+}
+
 void SmStateSaveExtra(struct SaveLoadInfo *sli) {
-  if (g_game_fiber || sm_execution_mode() != SNESRECOMP_EXECUTION_MODE_LLE)
-    return;
   uint32_t header[7] = {
-    SM_FILE_STATE_MAGIC, 1, g_lle_resume_pc,
+    SM_FILE_STATE_MAGIC, 2, g_lle_resume_pc,
     g_game_started ? 1u : 0u, g_game_done ? 1u : 0u,
     counter_global_frames, (uint32_t)SmSpcPlayer_StateSize()
   };
@@ -150,8 +145,8 @@ void SmStateLoadExtra(struct SaveLoadInfo *sli, uint32_t version) {
   g_loaded_file_state_valid = false;
   sli->func(sli, g_loaded_file_state, sizeof(g_loaded_file_state));
   const uint32_t *h = g_loaded_file_state;
-  if (h[0] != SM_FILE_STATE_MAGIC || h[1] != 1 || h[2] > 0xFFFFFFu ||
-      h[3] > 1 || h[4] > 1 || (h[6] && h[6] != SmSpcPlayer_StateSize())) {
+  if (h[0] != SM_FILE_STATE_MAGIC || h[1] != 2 || h[2] > 0xFFFFFFu ||
+      h[3] > 1 || h[4] > 1 || h[6] != SmSpcPlayer_StateSize()) {
     fprintf(stderr, "[sm_state] unrecognized execution-state extension\n");
     RtlStateStreamFail(sli);
     return;
@@ -174,9 +169,7 @@ void SmStateLoadExtra(struct SaveLoadInfo *sli, uint32_t version) {
 
 void SmOnStateLoaded(uint32_t version) {
   SmReplayStateLoaded();
-  SmRendererReset();
-  if (!g_loaded_file_state_valid || g_game_fiber ||
-      sm_execution_mode() != SNESRECOMP_EXECUTION_MODE_LLE) {
+  if (!g_loaded_file_state_valid) {
     fprintf(stderr, "[sm_state] loaded legacy/incompatible v%u snapshot; "
             "native continuation not restored\n", (unsigned)version);
     g_loaded_file_state_valid = false;
@@ -190,285 +183,165 @@ void SmOnStateLoaded(uint32_t version) {
   g_loaded_file_state_valid = false;
 }
 
-static void CALLBACK sm_game_fiber_entry(void *param) {
-  (void)param;
-  /* Enter at the reset vector and run the whole game. Every vblank
-   * wait inside yields via sm_host_yield (SwitchToFiber back to the
-   * host); control only reaches the line after I_RESET if the game's
-   * top-level program actually returns, which Super Metroid's main
-   * loop never does. */
-  I_RESET(&g_cpu);
-  if (sm_rtl_diag_enabled())
-    fprintf(stderr, "[sm_rtl] game fiber returned from I_RESET — unexpected\n");
-  g_game_done = true;
-  for (;;)
-    SwitchToFiber(g_host_fiber);
-}
-
-void sm_host_yield(void) {
-  /* Called from the WaitForNMI HLE, inside the game fiber. Save the
-   * game's full register file, hand control to the host, and restore on
-   * resume so the game continues with exactly its pre-yield state. */
-  sm_save_cpu(&g_game_saved, &g_cpu);
-  SwitchToFiber(g_host_fiber);
-  sm_restore_cpu(&g_cpu, &g_game_saved);
-}
-
-/* ── Rewindable execution position (rollback snapshots) ──────────────────
- *
- * This port's guest is one linear program on ONE host fiber: WaitForNMI
- * yields from arbitrary call depth, so the game's position in its own code IS
- * that fiber's C call chain, and no guest snapshot contains it. Rewinding the
- * machine without it leaves the two out of step -- measured before these
- * hooks existed, run-ahead's rewind left 21 frames in 1,200 in a state the
- * game would not otherwise have been in, in bursts around scene changes where
- * the call depth differs from frame to frame.
- *
- * So a rollback snapshot carries the fiber's live stack and context, plus the
- * register file sm_host_yield parked beside it. In-process, in-memory, this
- * build only -- exactly the promise RtlRollbackSaveToMemory makes. File
- * savestates do NOT use these: a stack image is not a thing to write to disk.
- */
+/* Rollback carries the scheduler continuation and SPC execution position.
+ * The shared execution residue already owns the architectural CPU registers.
+ * Build-specific snapshots intentionally have no legacy fiber conversion. */
 typedef struct SmExecHeader {
-  uint32_t   magic;
-  uint32_t   version;
-  SmCpuSave  game_saved;
-  uint8_t    game_started;
-  uint8_t    game_done;
-  uint8_t    pad[2];
-  uint32_t   lle_resume_pc;
-  uint32_t   fiber_bytes;
-  uint32_t   spc_bytes;
+  uint32_t magic, version, resume_pc, spc_bytes;
+  uint16_t frames;
+  uint8_t started, done;
 } SmExecHeader;
-
-#define SM_EXEC_MAGIC   0x534D4558u  /* 'SMEX' */
-#define SM_EXEC_VERSION 1u
+#define SM_EXEC_MAGIC 0x534D4558u
+#define SM_EXEC_VERSION 2u
 
 size_t SmExecStateBound(void) {
-  /* No fiber: this frame ran on the interpreter bridge, whose own position is
-   * already in the rollback residue. All that is left is the small header --
-   * and g_lle_resume_pc in it is the thing that actually bit, because it is
-   * where the bridge resumes next frame and speculation moves it. */
-  if (!g_game_fiber) return sizeof(SmExecHeader) + SmSpcPlayer_StateSize();
-  /* A fiber exists, so the call chain in it IS the guest's position. If this
-   * backend cannot copy one, say so with a zero bound rather than let a
-   * rewind put the machine back and leave the fiber where it was. */
-  if (!FiberSnapshotSupported()) return 0;
-  {
-    size_t fiber = FiberSnapshotBound(g_game_fiber);
-    /* A fiber that exists but has never been suspended has nothing live to
-     * copy; the header alone is the whole position. */
-    return sizeof(SmExecHeader) + fiber + SmSpcPlayer_StateSize();
-  }
+  return sizeof(SmExecHeader) + SmSpcPlayer_StateSize();
 }
 
 size_t SmExecStateSave(void *out, size_t capacity) {
-  SmExecHeader hdr;
-  size_t fiber = 0;
-  if (!out || capacity < sizeof(hdr)) return 0;
-  if (g_game_fiber) {
-    if (!FiberSnapshotSupported()) return 0;
-    fiber = FiberSnapshotSave(g_game_fiber, (uint8_t *)out + sizeof(hdr),
-                              capacity - sizeof(hdr));
-    if (!fiber && FiberSnapshotBound(g_game_fiber)) return 0;  /* had one, lost it */
-  }
-  hdr.magic         = SM_EXEC_MAGIC;
-  hdr.version       = SM_EXEC_VERSION;
-  hdr.game_saved    = g_game_saved;
-  hdr.game_started  = g_game_started ? 1u : 0u;
-  hdr.game_done     = g_game_done ? 1u : 0u;
-  hdr.pad[0] = hdr.pad[1] = 0;
-  {
-    size_t spc = SmSpcPlayer_SaveState((uint8_t *)out + sizeof(hdr) + fiber,
-                                       capacity - sizeof(hdr) - fiber);
-    if (SmSpcPlayer_StateSize() && !spc) return 0;
-    hdr.spc_bytes = (uint32_t)spc;
-    hdr.lle_resume_pc = g_lle_resume_pc;
-    hdr.fiber_bytes   = (uint32_t)fiber;
-    memcpy(out, &hdr, sizeof(hdr));
-    return sizeof(hdr) + fiber + spc;
-  }
+  SmExecHeader hdr = {0};
+  if (!out || capacity < SmExecStateBound()) return 0;
+  hdr.magic = SM_EXEC_MAGIC;
+  hdr.version = SM_EXEC_VERSION;
+  hdr.resume_pc = g_lle_resume_pc;
+  hdr.frames = counter_global_frames;
+  hdr.started = g_game_started;
+  hdr.done = g_game_done;
+  hdr.spc_bytes = (uint32_t)SmSpcPlayer_SaveState(
+      (uint8_t *)out + sizeof(hdr), capacity - sizeof(hdr));
+  if (hdr.spc_bytes != SmSpcPlayer_StateSize()) return 0;
+  memcpy(out, &hdr, sizeof(hdr));
+  return sizeof(hdr) + hdr.spc_bytes;
 }
 
 int SmExecStateLoad(const void *in, size_t size) {
   SmExecHeader hdr;
   if (!in || size < sizeof(hdr)) return 0;
   memcpy(&hdr, in, sizeof(hdr));
-  if (hdr.magic != SM_EXEC_MAGIC || hdr.version != SM_EXEC_VERSION) return 0;
-  if (size < sizeof(hdr) + hdr.fiber_bytes + hdr.spc_bytes) return 0;
-  if (hdr.spc_bytes &&
-      !SmSpcPlayer_LoadState((const uint8_t *)in + sizeof(hdr) + hdr.fiber_bytes,
-                             hdr.spc_bytes))
-    return 0;
-  if (hdr.fiber_bytes) {
-    if (!g_game_fiber) return 0;
-    if (!FiberSnapshotLoad(g_game_fiber, (const uint8_t *)in + sizeof(hdr),
-                           hdr.fiber_bytes))
-      return 0;
-  }
-  g_game_saved    = hdr.game_saved;
-  g_game_started  = hdr.game_started != 0;
-  g_game_done     = hdr.game_done != 0;
-  g_lle_resume_pc = hdr.lle_resume_pc;
+  if (hdr.magic != SM_EXEC_MAGIC || hdr.version != SM_EXEC_VERSION ||
+      hdr.resume_pc > 0xFFFFFFu || hdr.started > 1 || hdr.done > 1 ||
+      hdr.spc_bytes != SmSpcPlayer_StateSize() ||
+      size - sizeof(hdr) < hdr.spc_bytes) return 0;
+  if (hdr.spc_bytes && !SmSpcPlayer_LoadState(
+          (const uint8_t *)in + sizeof(hdr), hdr.spc_bytes)) return 0;
+  g_lle_resume_pc = hdr.resume_pc;
+  counter_global_frames = hdr.frames;
+  g_game_started = hdr.started != 0;
+  g_game_done = hdr.done != 0;
   return 1;
 }
 
 void RunOneFrameOfGame(void) {
-  if (sm_execution_mode() == SNESRECOMP_EXECUTION_MODE_LLE) {
-    /* These door-loader routines wait for NMI from inside their bodies.
-     * Execute their authoritative ROM bytes under the LLE scheduler instead
-     * of bouncing into an atomic compiled body that cannot be interrupted. */
-    static const uint32_t k_lle_door_loader_targets[] = {
-      0x828948u,  /* Game_RunOneFrameOfGame: LLE-authoritative gameplay */
-      0x828B44u,  /* GameState_8_MainGameplay */
-      0x82E169u,  /* GameState_9_HitDoorBlock */
-      0x82E1B7u,  /* GameState_10_LoadingNextRoom_Async */
-      0x82E288u,  /* GameState_11_LoadingNextRoom_Async */
-      0x82DFD1u,  /* LoadEnemyGfxToVram */
-      0x82E039u,  /* inline-parameter VRAM transfer */
-      0x82E4A9u,  /* DoorTransitionFunction_LoadMoreThings_Async */
-      0x82E5D9u,  /* door-dependent background transfer dispatcher */
-      0x82E5EBu,  /* UpdateBackgroundCommand_2_TransferToVram */
-    };
-    interp_bridge_set_lle_bounce_exclusions(
-        k_lle_door_loader_targets,
-        sizeof(k_lle_door_loader_targets) /
-            sizeof(k_lle_door_loader_targets[0]));
+  (void)snesrecomp_execution_policy();
+  /* These door-loader routines wait for NMI from inside their bodies.
+   * Execute their authoritative ROM bytes under the LLE scheduler instead
+   * of bouncing into an atomic compiled body that cannot be interrupted. */
+  static const uint32_t k_lle_door_loader_targets[] = {
+    0x828948u,  /* Game_RunOneFrameOfGame: LLE-authoritative gameplay */
+    0x828B44u,  /* GameState_8_MainGameplay */
+    0x82E169u,  /* GameState_9_HitDoorBlock */
+    0x82E1B7u,  /* GameState_10_LoadingNextRoom_Async */
+    0x82E288u,  /* GameState_11_LoadingNextRoom_Async */
+    0x82DFD1u,  /* LoadEnemyGfxToVram */
+    0x82E039u,  /* inline-parameter VRAM transfer */
+    0x82E4A9u,  /* DoorTransitionFunction_LoadMoreThings_Async */
+    0x82E5D9u,  /* door-dependent background transfer dispatcher */
+    0x82E5EBu,  /* UpdateBackgroundCommand_2_TransferToVram */
+  };
+  interp_bridge_set_lle_bounce_exclusions(
+      k_lle_door_loader_targets,
+      sizeof(k_lle_door_loader_targets) /
+          sizeof(k_lle_door_loader_targets[0]));
 
-    /* The real $80:8338 WaitForNMI asserts $05B4, then spins at $80:8343
-     * until NMI clears it.  Run reset only on the first host frame; every
-     * later frame injects NMI and resumes at that exact guest PC.  The guest
-     * stack retains arbitrary-depth coroutine continuations, while compiled
-     * bodies bounce through the paired ABI without a host fiber. */
-    /* A contained bridge bail (see interp_bridge_run_loop returning 0) leaves
-     * the guest stack half-unwound; re-entering every frame from the stale
-     * resume PC executed garbage until it hit InvalidInterrupt_Crash and
-     * could reach save RAM on the way.  Stay stopped, like the fiber path. */
-    if (g_game_done)
-      return;
-    uint32_t entry_pc = g_lle_resume_pc;
-    if (!g_game_started) {
-      cpu_state_init(&g_cpu, g_ram);
-      g_game_started = true;
-      entry_pc = 0x80841Cu;
-    } else {
-      SmCpuSave interrupted;
-      sm_save_cpu(&interrupted, &g_cpu);
-      g_snes->inNmi = true;
-      cpu_push_interrupt_frame(&g_cpu);
-      I_NMI(&g_cpu);
-      /* The host-injected NMI communicates through SNES memory and hardware
-       * state.  Restore the interrupted main-line register file exactly as
-       * the HLE fiber path does; the generated RTI has no live guest PC to
-       * return to and therefore cannot by itself preserve this continuation. */
-      sm_restore_cpu(&g_cpu, &interrupted);
-
-      /* The synthetic continuation is $80:8343, immediately after
-       * WaitForNMI's `SEP #$30`.  CpuState has no guest PC field, so the NMI
-       * save/restore alone cannot reconstruct this PC-derived width contract
-       * if a compiled coroutine returned with M0/X0 just before yielding.
-       * Enforce the state hardware necessarily has at this exact resume PC;
-       * otherwise LDA $05B4 becomes a 16-bit read, observes adjacent $05B5,
-       * and spins to the interpreter step cap during door transitions. */
-      if ((entry_pc & 0xFFFFu) == 0x8343u) {
-        g_cpu.P |= 0x30u;
-        cpu_p_to_mirrors(&g_cpu);
-        g_cpu.X &= 0x00FFu;
-        g_cpu.Y &= 0x00FFu;
-        g_cpu.DB = (uint8_t)(entry_pc >> 16);
-      }
-    }
-
-    /* Diagnostic (SM_LLE_RESUME_DIAG): g_lle_resume_pc is the host's ONLY
-     * continuation handle into the guest. A healthy frame always comes back
-     * to WaitForNMI's $80:8343 spin, so a resume PC that stops advancing means
-     * the guest is parked and every subsequent frame is re-entering the same
-     * place with the same state. That is invisible from WRAM state alone. */
-    {
-      static uint32_t s_prev_entry = 0xFFFFFFFFu;
-      static unsigned s_same = 0;
-      static int s_diag = -1;
-      if (s_diag < 0) {
-        const char *v = getenv("SM_LLE_RESUME_DIAG");
-        s_diag = (v && v[0] && v[0] != '0');
-      }
-      if (s_diag) {
-        if (entry_pc == s_prev_entry) {
-          if (++s_same == 8u || (s_same % 300u) == 0u)
-            fprintf(stderr,
-                    "[sm_lle] resume PC STUCK at $%06X for %u frames "
-                    "(S=%04X DB=%02X P=%02X gs=%02X)\n",
-                    (unsigned)entry_pc, s_same, (unsigned)g_cpu.S,
-                    (unsigned)g_cpu.DB, (unsigned)g_cpu.P,
-                    (unsigned)g_ram[0x0998]);
-        } else {
-          if (s_same >= 8u)
-            fprintf(stderr,
-                    "[sm_lle] resume PC advanced $%06X -> $%06X after %u "
-                    "frames\n",
-                    (unsigned)s_prev_entry, (unsigned)entry_pc, s_same);
-          s_same = 0;
-          s_prev_entry = entry_pc;
-        }
-      }
-    }
-
-    if (!interp_bridge_run_loop(&g_cpu, entry_pc, 0x808343u, 0x05B4u, 1)) {
-      fprintf(stderr, "[sm_rtl] LLE loop bailed at entry $%06X\n",
-              (unsigned)entry_pc);
-      g_game_done = true;
-    } else {
-      uint32_t next_pc = interp_bridge_lle_resume_pc();
-      if (next_pc)
-        g_lle_resume_pc = next_pc;
-    }
-    ++counter_global_frames;
-    return;
-  }
-
-  if (g_host_fiber == NULL) {
-    g_host_fiber = ConvertThreadToFiber(NULL);
-    if (g_host_fiber == NULL) {
-      fprintf(stderr, "[sm_rtl] ConvertThreadToFiber failed\n");
-      abort();
-    }
-  }
-
-  if (!g_game_started) {
-    /* Frame 0: boot. Initialize CPU state and run reset up to the first
-     * WaitForNMI yield. No NMI has fired yet (matches hardware: the
-     * first NMI arrives after reset has set up the PPU and enabled
-     * NMI). */
-    cpu_state_init(&g_cpu, g_ram);
-    /* 8 MiB fiber stack — recompiled call chains (deep object/AI
-     * handlers under the game-state dispatch) can nest far. */
-    g_game_fiber = CreateFiber(8 * 1024 * 1024, sm_game_fiber_entry, NULL);
-    if (g_game_fiber == NULL) {
-      fprintf(stderr, "[sm_rtl] CreateFiber failed\n");
-      abort();
-    }
-    g_game_started = true;
-    SwitchToFiber(g_game_fiber);
-    ++counter_global_frames;
-    return;
-  }
-
+  /* The real $80:8338 WaitForNMI asserts $05B4, then spins at $80:8343
+   * until NMI clears it.  Run reset only on the first host frame; every
+   * later frame injects NMI and resumes at that exact guest PC.  The guest
+   * stack retains arbitrary-depth coroutine continuations, while compiled
+   * bodies bounce through the paired ABI without a host fiber. */
+  /* A contained bridge bail (see interp_bridge_run_loop returning 0) leaves
+   * the guest stack half-unwound; re-entering every frame from the stale
+   * resume PC executed garbage until it hit InvalidInterrupt_Crash and
+   * could reach save RAM on the way. Stay stopped after a contained bail. */
   if (g_game_done)
     return;
+  uint32_t entry_pc = g_lle_resume_pc;
+  if (!g_game_started) {
+    cpu_state_init(&g_cpu, g_ram);
+    g_game_started = true;
+    entry_pc = 0x80841Cu;
+  } else {
+    SmCpuSave interrupted;
+    sm_save_cpu(&interrupted, &g_cpu);
+    g_snes->inNmi = true;
+    cpu_push_interrupt_frame(&g_cpu);
+    I_NMI(&g_cpu);
+    /* The host-injected NMI communicates through SNES memory and hardware
+     * state. Restore the interrupted main-line register file before resuming;
+     * the generated RTI has no live guest PC to return to and therefore
+     * cannot by itself preserve this continuation. */
+    sm_restore_cpu(&g_cpu, &interrupted);
 
-  /* Steady state: a vblank just began. Run the recompiled NMI handler
-   * (per-frame VRAM/OAM/CGRAM DMA, music queue, joypad latch), then
-   * resume the game fiber after its WaitForNMI. g_cpu currently holds
-   * the game's yielded register file, so I_NMI runs as if it interrupted
-   * the main line — its RTI-balanced interrupt frame and any register
-   * churn are discarded when sm_host_yield restores g_game_saved on
-   * resume (NMI talks to the main line through RAM, not registers). */
-  g_snes->inNmi = true;
-  cpu_push_interrupt_frame(&g_cpu);
-  I_NMI(&g_cpu);
+    /* The synthetic continuation is $80:8343, immediately after
+     * WaitForNMI's `SEP #$30`.  CpuState has no guest PC field, so the NMI
+     * save/restore alone cannot reconstruct this PC-derived width contract
+     * if a compiled coroutine returned with M0/X0 just before yielding.
+     * Enforce the state hardware necessarily has at this exact resume PC;
+     * otherwise LDA $05B4 becomes a 16-bit read, observes adjacent $05B5,
+     * and spins to the interpreter step cap during door transitions. */
+    if ((entry_pc & 0xFFFFu) == 0x8343u) {
+      g_cpu.P |= 0x30u;
+      cpu_p_to_mirrors(&g_cpu);
+      g_cpu.X &= 0x00FFu;
+      g_cpu.Y &= 0x00FFu;
+      g_cpu.DB = (uint8_t)(entry_pc >> 16);
+    }
+  }
 
-  SwitchToFiber(g_game_fiber);
+  /* Diagnostic (SM_LLE_RESUME_DIAG): g_lle_resume_pc is the host's ONLY
+   * continuation handle into the guest. A healthy frame always comes back
+   * to WaitForNMI's $80:8343 spin, so a resume PC that stops advancing means
+   * the guest is parked and every subsequent frame is re-entering the same
+   * place with the same state. That is invisible from WRAM state alone. */
+  {
+    static uint32_t s_prev_entry = 0xFFFFFFFFu;
+    static unsigned s_same = 0;
+    static int s_diag = -1;
+    if (s_diag < 0) {
+      const char *v = getenv("SM_LLE_RESUME_DIAG");
+      s_diag = (v && v[0] && v[0] != '0');
+    }
+    if (s_diag) {
+      if (entry_pc == s_prev_entry) {
+        if (++s_same == 8u || (s_same % 300u) == 0u)
+          fprintf(stderr,
+                  "[sm_lle] resume PC STUCK at $%06X for %u frames "
+                  "(S=%04X DB=%02X P=%02X gs=%02X)\n",
+                  (unsigned)entry_pc, s_same, (unsigned)g_cpu.S,
+                  (unsigned)g_cpu.DB, (unsigned)g_cpu.P,
+                  (unsigned)g_ram[0x0998]);
+      } else {
+        if (s_same >= 8u)
+          fprintf(stderr,
+                  "[sm_lle] resume PC advanced $%06X -> $%06X after %u "
+                  "frames\n",
+                  (unsigned)s_prev_entry, (unsigned)entry_pc, s_same);
+        s_same = 0;
+        s_prev_entry = entry_pc;
+      }
+    }
+  }
+
+  if (!interp_bridge_run_loop(&g_cpu, entry_pc, 0x808343u, 0x05B4u, 1)) {
+    fprintf(stderr, "[sm_rtl] LLE loop bailed at entry $%06X\n",
+            (unsigned)entry_pc);
+    g_game_done = true;
+  } else {
+    uint32_t next_pc = interp_bridge_lle_resume_pc();
+    if (next_pc)
+      g_lle_resume_pc = next_pc;
+  }
   ++counter_global_frames;
+  return;
 }
 
 void SmDrawPpuFrame(void) {
