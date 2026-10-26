@@ -12,6 +12,7 @@
 #include "snes_overlay_draw.h"
 #include "snes_runahead.h"
 #include "sm_video.h"
+#include "sm_activity.h"
 #include "variables.h"
 
 /* kPauseMenuFuncs ($82:90FF) states this tab moves the guest between. Leaving
@@ -146,6 +147,8 @@ static int RunAction(void *ctx, const RecompRuntimeUiItem *item) {
 
 static int IsEnabled(void *ctx, const RecompRuntimeUiItem *item) {
   (void)ctx;
+  if (!strcmp(item->key, "widescreen") || !strcmp(item->key, "aspect"))
+    return SmActivityGeometryMutable();
   if (!strcmp(item->key, "hud")) return g_sm_video.enhanced;
   /* The host ignores a scale change while fullscreen, so the row is too. */
   if (!strcmp(item->key, "window_scale")) return !snesrecomp_get_fullscreen();

@@ -51,6 +51,7 @@
 #include "sm_spc_player.h"
 #include "sm_replay.h"
 #include "sm_startup.h"
+#include "sm_activity.h"
 #if defined(RECOMP_LAUNCHER)
 #include "sm_mods.h"
 #endif
@@ -80,7 +81,7 @@ static void SmSyncCaptureGeneration(void) {
 }
 
 static bool SmCustomRendererEnabled(void) {
-  return g_sm_video.enhanced || g_sm_video.fps_enabled;
+  return g_sm_video.enhanced || g_sm_video.fps_enabled || SmActivityNetworkWide();
 }
 
 bool SmDisplay_IsWidescreenActive(void) { return g_sm_viewport.enhanced; }
@@ -136,6 +137,7 @@ static int SmKeepPacingDebt(void) {
 
 static void SmPrepareFrame(int drawable_w, int drawable_h, int *frame_w, int *frame_h) {
   g_sm_viewport = SmCalculateViewport(&g_sm_video, drawable_w, drawable_h);
+  SmActivityViewport(&g_sm_viewport);
   SmReplayViewport(&g_sm_viewport);
   *frame_w = g_sm_viewport.width;
   *frame_h = SM_HEIGHT;

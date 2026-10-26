@@ -3,6 +3,7 @@
  * All checkpoint serialization happens on the simulation thread at a boundary.
  */
 #include "sm_replay.h"
+#include "sm_activity.h"
 #include "sm_video.h"
 #include "diagnostics/replay_writer.h"
 #include "common_rtl.h"
@@ -178,7 +179,7 @@ static bool start_segment(void) {
   segment_bytes=0;
   snprintf(path,sizeof(path),"%s-%06u.replay",stem,segment);
   char header[512];
-  snprintf(header,sizeof(header),"SMREPLAY 1\nBUILD %s %s %s %s\nROM %08x\nMODE lle\n",
+  snprintf(header,sizeof(header),"SMREPLAY 2\nBUILD %s %s %s %s\nROM %08x\nMODE lle\n",
       SNESRECOMP_BUILD_VERSION,SM_REPLAY_REVISION,SM_REPLAY_ENGINE,SM_REPLAY_TARGET,rom_identity);
   if(!SnesReplayWriterBegin(writer,path,header,config_path,"mods/preloaded/state.toml",
       "Super Metroid presentation mods and effective renderer settings are recorded in every input record.\n")) {
@@ -221,7 +222,7 @@ static bool replay_floor_active(void) {
 static bool load_playback(void) {
   char line[512], version[80], revision[80], engine[80], target[80], tail;
   unsigned rom;
-  if(!fgets(line,sizeof(line),stream) || strcmp(line,"SMREPLAY 1\n") ||
+  if(!fgets(line,sizeof(line),stream) || strcmp(line,"SMREPLAY 2\n") ||
       !fgets(line,sizeof(line),stream) || sscanf(line,"BUILD %79s %79s %79s %79s %c",version,revision,engine,target,&tail)!=4 ||
       !fgets(line,sizeof(line),stream) || sscanf(line,"ROM %x %c",&rom,&tail)!=1 ||
       !fgets(line,sizeof(line),stream) || strcmp(line,"MODE lle\n")) {
@@ -266,12 +267,13 @@ static bool playback_begin(uint32_t *inputs) {
     }
     next_frame=(unsigned)snes_frame_counter;
   } else if(!playback_rows) {error("first input has no machine checkpoint");return false;}
-  unsigned frame, word, flags, aspect, fps;
-  if(sscanf(line,"I %u %x %x %u %u %c",&frame,&word,&flags,&aspect,&fps,&tail)!=5 ||
-      flags>63 || aspect>=SM_ASPECT_COUNT || !SmValidFps(fps) || frame!=next_frame) {
+  unsigned frame, word, flags, aspect, fps, extra;
+  if(sscanf(line,"I %u %x %x %u %u %u %c",&frame,&word,&flags,&aspect,&fps,&extra,&tail)!=6 ||
+      flags>63 || aspect>=SM_ASPECT_COUNT || !SmValidFps(fps) || !SmActivityExtraValid(extra) || frame!=next_frame) {
     error("invalid input/settings record or discontinuity without checkpoint");return false;
   }
   g_sm_video=(SmVideoSettings){(flags&1)!=0,(SmAspect)aspect,fps,(flags&2)!=0,(flags&4)!=0};
+  SmActivityRestore(extra);
   snesrecomp_desktop_set_new_renderer((flags&8)!=0); g_config.no_sprite_limits=(flags&16)!=0;
   if(flags&32)RtlEnableExtendedFrameTiming();
   if(!!(flags&32)!=rtl_apu_extended_frame_timing()) {error("different frame timing mode");return false;}
@@ -299,8 +301,8 @@ bool SmReplayBegin(uint32_t *inputs) {
   if((!rows || discontinuity) && !write_snapshot())return true;
   generation=RtlStateGeneration(); recorded_load_sequence=load_sequence;
   char input[160];
-  snprintf(input,sizeof(input),"I %u %08x %02x %u %u\n",frame,*inputs,policy(),
-      (unsigned)g_sm_video.aspect,g_sm_video.fps);
+  snprintf(input,sizeof(input),"I %u %08x %02x %u %u %u\n",frame,*inputs,policy(),
+      (unsigned)g_sm_video.aspect,g_sm_video.fps,SmActivityExtra());
   if(!SnesReplayWriterLine(writer,input)) {error(SnesReplayWriterError(writer));return true;}
   next_frame=frame+1; pending=true;
   return true; /* Optional diagnostics never stop gameplay. */

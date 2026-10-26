@@ -24,11 +24,12 @@ def inspect(path):
     if path.stat().st_size > 2 * 1024 * 1024:
         raise ValueError("oversized replay segment")
     lines = path.read_text(encoding="utf-8").splitlines()
-    if (len(lines) < 4 or lines[0] != "SMREPLAY 1" or
+    if (len(lines) < 4 or lines[0] not in ("SMREPLAY 1", "SMREPLAY 2") or
             len(lines[1].split()) != 5 or not lines[1].startswith("BUILD ") or
             len(lines[2].split()) != 2 or not lines[2].startswith("ROM ") or
             lines[3] != "MODE lle"):
         raise ValueError("unsupported or truncated replay header")
+    activity = lines[0] == "SMREPLAY 2"
     if not 0 <= int(lines[2].split()[1], 16) <= 0xffffffff:
         raise ValueError("invalid ROM identity")
     state_path = path.with_name(path.name + ".sav")
@@ -52,9 +53,11 @@ def inspect(path):
                     checkpoints += 1
                     checkpoint = True
                     next_frame = None
-                elif fields[0] == "I" and len(fields) == 6 and not pending and not raster_pending and checkpoint:
+                elif fields[0] == "I" and len(fields) == (7 if activity else 6) and not pending and not raster_pending and checkpoint:
                     frame, word, flags = int(fields[1]), int(fields[2], 16), int(fields[3], 16)
                     aspect, fps = map(int, fields[4:6])
+                    if activity and not 0 <= int(fields[6]) <= 214:
+                        raise ValueError("invalid simulation viewport")
                     if not (0 <= frame <= 0xffffffff and 0 <= word <= 0xffffffff and
                             0 <= flags <= 63 and 0 <= aspect < 5 and
                             fps in (0, 60, 90, 120, 144, 165, 240, 360) and
@@ -87,6 +90,11 @@ def inspect(path):
 
 
 def main():
+    # A redirected Windows console may use cp1252 while runtime diagnostics
+    # contain Unicode. Preserve the UTF-8 replay.log and never fail a valid
+    # reproduction just because its console cannot display one character.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("replay", type=Path)
     parser.add_argument("--check", action="store_true", help="validate records and checkpoint data without launching")

@@ -3,6 +3,7 @@
 #include "sm_spc_player.h"
 #include "sm_pause_options.h"
 #include "sm_replay.h"
+#include "sm_activity.h"
 #include "variables.h"
 #include "common_cpu_infra.h"
 #include "snes/snes.h"
@@ -92,8 +93,8 @@ static int sm_rtl_diag_enabled(void) {
  * pointer-free execution residue, never a serialized host fiber or C stack.
  * No host stack or pointer is part of a file snapshot. */
 #define SM_FILE_STATE_MAGIC 0x534D4653u  /* SMFS */
-#define SM_FILE_STATE_VERSION 3u
-static uint32_t g_loaded_file_state[7];
+#define SM_FILE_STATE_VERSION 4u
+static uint32_t g_loaded_file_state[8];
 static uint32_t g_loaded_pause_options;
 static bool g_loaded_file_state_valid;
 
@@ -109,7 +110,7 @@ const char *SmSnapshotIdentity(void) {
  * extension before the common loader writes any guest bytes as well. The
  * canonical SM cartridge has no Cx4 execution-clock suffix. */
 bool SmSnapshotPreflight(const void *data, size_t size) {
-  uint32_t version, header[7], stream_version, execution_size, pause_options;
+  uint32_t version, header[8], stream_version, execution_size, pause_options;
   size_t guest = RtlSnapshotGuestSize(&version);
   if (!data || size < 8 || !guest || guest > size || size - guest < sizeof(header) + 8)
     return false;
@@ -117,7 +118,7 @@ bool SmSnapshotPreflight(const void *data, size_t size) {
   memcpy(header, (const uint8_t *)data + guest, sizeof(header));
   if (stream_version != version || header[0] != SM_FILE_STATE_MAGIC || header[1] != SM_FILE_STATE_VERSION ||
       header[2] > 0xFFFFFFu || header[3] > 1 || header[4] > 1 ||
-      header[6] != SmSpcPlayer_StateSize()) return false;
+      header[6] != SmSpcPlayer_StateSize() || !SmActivityExtraValid(header[7])) return false;
   memcpy(&pause_options, (const uint8_t *)data + guest + sizeof(header), 4);
   if (pause_options > 1) return false;
   memcpy(&execution_size, (const uint8_t *)data + guest + sizeof(header) + 4, 4);
@@ -127,10 +128,10 @@ bool SmSnapshotPreflight(const void *data, size_t size) {
 }
 
 void SmStateSaveExtra(struct SaveLoadInfo *sli) {
-  uint32_t header[7] = {
+  uint32_t header[8] = {
     SM_FILE_STATE_MAGIC, SM_FILE_STATE_VERSION, g_lle_resume_pc,
     g_game_started ? 1u : 0u, g_game_done ? 1u : 0u,
-    counter_global_frames, (uint32_t)SmSpcPlayer_StateSize()
+    counter_global_frames, (uint32_t)SmSpcPlayer_StateSize(), SmActivityExtra()
   };
   sli->func(sli, header, sizeof(header));
   uint32_t pause_options = SmPauseOptions_IsActive() ? 1u : 0u;
@@ -153,7 +154,7 @@ void SmStateLoadExtra(struct SaveLoadInfo *sli, uint32_t version) {
   sli->func(sli, g_loaded_file_state, sizeof(g_loaded_file_state));
   const uint32_t *h = g_loaded_file_state;
   if (h[0] != SM_FILE_STATE_MAGIC || h[1] != SM_FILE_STATE_VERSION || h[2] > 0xFFFFFFu ||
-      h[3] > 1 || h[4] > 1 || h[6] != SmSpcPlayer_StateSize()) {
+      h[3] > 1 || h[4] > 1 || h[6] != SmSpcPlayer_StateSize() || !SmActivityExtraValid(h[7])) {
     fprintf(stderr, "[sm_state] unrecognized execution-state extension\n");
     RtlStateStreamFail(sli);
     return;
@@ -189,6 +190,7 @@ void SmOnStateLoaded(uint32_t version) {
   g_game_started = g_loaded_file_state[3] != 0;
   g_game_done = g_loaded_file_state[4] != 0;
   counter_global_frames = (uint16_t)g_loaded_file_state[5];
+  SmActivityRestore(g_loaded_file_state[7]);
   SmPauseOptions_SetActive(false);
   SmPauseOptions_SetActive(g_loaded_pause_options != 0);
   g_loaded_file_state_valid = false;
@@ -201,9 +203,10 @@ typedef struct SmExecHeader {
   uint32_t magic, version, resume_pc, spc_bytes;
   uint16_t frames;
   uint8_t started, done, pause_options, selected_row;
+  uint16_t activity_extra;
 } SmExecHeader;
 #define SM_EXEC_MAGIC 0x534D4558u
-#define SM_EXEC_VERSION 4u
+#define SM_EXEC_VERSION 5u
 
 size_t SmExecStateBound(void) {
   return sizeof(SmExecHeader) + SmSpcPlayer_StateSize();
@@ -220,6 +223,7 @@ size_t SmExecStateSave(void *out, size_t capacity) {
   hdr.done = g_game_done;
   hdr.pause_options = SmPauseOptions_IsActive();
   hdr.selected_row = (uint8_t)SmPauseOptions_Cursor();
+  hdr.activity_extra = (uint16_t)SmActivityExtra();
   hdr.spc_bytes = (uint32_t)SmSpcPlayer_SaveState(
       (uint8_t *)out + sizeof(hdr), capacity - sizeof(hdr));
   if (hdr.spc_bytes != SmSpcPlayer_StateSize()) return 0;
@@ -235,12 +239,14 @@ int SmExecStateLoad(const void *in, size_t size) {
       hdr.resume_pc > 0xFFFFFFu || hdr.started > 1 || hdr.done > 1 || hdr.pause_options > 1 ||
       !SmPauseOptions_CursorValid(hdr.selected_row) ||
       (!hdr.pause_options && hdr.selected_row) ||
+      !SmActivityExtraValid(hdr.activity_extra) ||
       hdr.spc_bytes != SmSpcPlayer_StateSize() ||
       size - sizeof(hdr) < hdr.spc_bytes) return 0;
   if (hdr.spc_bytes && !SmSpcPlayer_LoadState(
           (const uint8_t *)in + sizeof(hdr), hdr.spc_bytes)) return 0;
   g_lle_resume_pc = hdr.resume_pc;
   counter_global_frames = hdr.frames;
+  SmActivityRestore(hdr.activity_extra);
   SmPauseOptions_SetActive(hdr.pause_options != 0);
   SmPauseOptions_RestoreCursor(hdr.selected_row);
   g_game_started = hdr.started != 0;

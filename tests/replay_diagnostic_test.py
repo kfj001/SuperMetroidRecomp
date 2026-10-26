@@ -59,6 +59,16 @@ class ReplayInspectorTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 replay.inspect(self.path)
 
+    def test_simulation_viewport(self):
+        self.header = self.header.replace("SMREPLAY 1", "SMREPLAY 2")
+        for extra in (0, 43, 96, 213, 214):
+            self.write(self.input.rstrip() + f" {extra}\n" + self.complete)
+            replay.inspect(self.path)
+        for extra in (-1, 215, 65535):
+            self.write(self.input.rstrip() + f" {extra}\n" + self.complete)
+            with self.assertRaisesRegex(ValueError, "simulation viewport"):
+                replay.inspect(self.path)
+
 
 if __name__ == "__main__":
     unittest.main()

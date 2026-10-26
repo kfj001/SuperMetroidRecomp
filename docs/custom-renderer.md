@@ -7,6 +7,16 @@ This is an experimental custom renderer. The requested worktree and Mods
 functionality is implemented; this is not a full-game visual-fidelity or
 sustained-performance certification.
 
+## Simulation in the wider view
+
+The renderer remains read-only. A separate simulation viewport extends the
+ROM's enemy processing queues in slot order and the common player/enemy
+projectile culls. Native 4:3 retains the original behavior. Enemies can attack
+sooner when visible in a wider view. Fit samples its window geometry before
+simulation; replay records that geometry, and snapshots preserve it. Netplay
+uses the host's fixed initial viewport for every peer throughout the match.
+The portable ROM-only activity reference remains a build-time selection.
+
 ## October 25 feedback corrections
 
 HUD/dialogue BG3 pages remain screen-space through message HDMA and boss
