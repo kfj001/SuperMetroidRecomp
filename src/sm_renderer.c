@@ -771,11 +771,9 @@ static SmBackgroundLine background_line(const Ppu *p, const uint8_t *room, unsig
   b.size = 1 << b.shift;
   b.scroll_x = p->hScroll[layer]; b.scroll_y = p->vScroll[layer];
   b.sc = p->bgXsc[layer];
-  /* $58/$5A select the same HUD/message tilemap with different heights.
-   * InitializeSpecialEffectsForNewRoom and InitializePpuForMessageBoxes
-   * select the HUD and dialogue sizes respectively.
-   * These remain screen-space even after the IRQ restores gameplay color
-   * math or a boss scrolls BG3. World FX use a separate map (normally $5C). */
+  /* $58/$5A include the HUD/message map at VRAM $5800..$5BFF. The taller
+   * $5A map also includes liquid FX at $5C00..$5FFF: classify the addressed
+   * page below, not the entire BG3 map as screen-space. */
   b.screen_space = layer == 2 && (b.sc & 0xfc) == 0x58;
   if (layer == 1 && object.valid && (room[0x91b] & 1)) {
     b.object_canvas = true;
@@ -818,10 +816,6 @@ static SmBackgroundLine background_line(const Ppu *p, const uint8_t *room, unsig
 
 static uint16_t background_pixel(const SmBackgroundLine *b, const uint16_t *vram,
                                  int x, int y, bool margin) {
-  /* Limit the UI layer itself, not gameplay scanlines: dialogue HDMA and
-   * scrolling can expose any row of this map through either screen. */
-  if (margin && b->screen_space)
-    return b->sc & 2 ? (uint16_t)((b->low << 12) | (2 << 8) | SM_PIXEL_OPAQUE_BLACK) : 0;
   if (margin && b->object_canvas &&
       (x < b->canvas_x || x >= b->canvas_x + b->canvas_width ||
        y < b->canvas_y || y >= b->canvas_y + b->canvas_height)) return 0;
@@ -847,6 +841,11 @@ static uint16_t background_pixel(const SmBackgroundLine *b, const uint16_t *vram
     unsigned address = (sc & 0xfc) * 256 + (tx & 31) + (ty & 31) * 32;
     if ((sc & 1) && (tx & 32)) address += 1024;
     if ((sc & 2) && (ty & 32)) address += (sc & 1) ? 2048 : 1024;
+    /* Message HDMA and boss scrolling can expose any UI row. Preserve its
+     * opaque-black subscreen without suppressing the adjacent liquid page
+     * selected by the same $5A register on lower gameplay scanlines. */
+    if (margin && b->screen_space && (address & 0x7c00) == 0x5800)
+      return b->sc & 2 ? (uint16_t)((b->low << 12) | (2 << 8) | SM_PIXEL_OPAQUE_BLACK) : 0;
     tile = vram[address & 0x7fff];
   }
   int cx = px & (size - 1), cy = py & (size - 1);
