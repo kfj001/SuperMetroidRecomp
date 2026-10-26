@@ -754,6 +754,14 @@ typedef struct SmBackgroundLine {
  * palette index or exposing repeated HUD texels in the wider view. */
 enum { SM_PIXEL_OPAQUE_BLACK = 0x0800 };
 
+/* Scroll registers are ten bits, but a 32-tile axis wraps sooner. HDMA can
+ * leave an equivalent register alias (e.g. BG2 VOFS256 vs768). Recovering a
+ * world offset modulo1024 turns that alias into a false half-room jump. */
+static int background_scroll_delta(int difference, unsigned sc, unsigned size, bool vertical) {
+  int period = (int)size * (sc & (vertical ? 2u : 1u) ? 64 : 32);
+  return ((difference + period / 2) & (period - 1)) - period / 2;
+}
+
 static SmBackgroundLine background_line(const Ppu *p, const uint8_t *room, unsigned layer,
                                         SmBg2Object object) {
   static const unsigned low[] = {8, 7, 1}, high[] = {12, 11, 3};
@@ -791,12 +799,12 @@ static SmBackgroundLine background_line(const Ppu *p, const uint8_t *room, unsig
      * relative to the live camera, then sample decompressed world data. */
     int camera_x = (int16_t)read16(room, layer ? 0x917 : 0x911);
     int camera_y = (int16_t)read16(room, layer ? 0x919 : 0x915);
-    int dx = ((int)p->hScroll[layer] - camera_x -
-              (int)read16(room, layer ? 0x921 : 0x91d) + 512) & 1023;
-    int dy = ((int)p->vScroll[layer] - camera_y -
-              (int)read16(room, layer ? 0x923 : 0x91f) + 512) & 1023;
-    b.world_x = camera_x + dx - 512;
-    b.world_y = camera_y + dy - 512;
+    int dx = background_scroll_delta((int)p->hScroll[layer] - camera_x -
+              (int)read16(room, layer ? 0x921 : 0x91d), b.sc, b.size, false);
+    int dy = background_scroll_delta((int)p->vScroll[layer] - camera_y -
+              (int)read16(room, layer ? 0x923 : 0x91f), b.sc, b.size, true);
+    b.world_x = camera_x + dx;
+    b.world_y = camera_y + dy;
     b.room = room;
   }
   return b;
@@ -1926,9 +1934,11 @@ bool SmRendererDraw(uint32_t *out, SmViewport viewport, bool hud_anchored, doubl
       if (old.bgmode == scanout.bgmode && old.bgTileAdr == scanout.bgTileAdr &&
           !memcmp(old.bgXsc, scanout.bgXsc, sizeof(old.bgXsc))) {
         for (int layer = 0; layer < (mode == 7 ? 0 : 3); ++layer) {
-          int dx = ((int)old.hScroll[layer] - scanout.hScroll[layer] + 512) & 1023;
-          int dy = ((int)old.vScroll[layer] - scanout.vScroll[layer] + 512) & 1023;
-          dx -= 512; dy -= 512;
+          unsigned size = (scanout.bgmode >> layer) & 0x10 ? 16 : 8;
+          int dx = background_scroll_delta((int)old.hScroll[layer] - scanout.hScroll[layer],
+                                            scanout.bgXsc[layer], size, false);
+          int dy = background_scroll_delta((int)old.vScroll[layer] - scanout.vScroll[layer],
+                                            scanout.bgXsc[layer], size, true);
           if (layer == 0 && ((dx && abs(dx) <= 32) || (dy && abs(dy) <= 32)))
             ++render_stats.interpolated_scroll_lines;
           if (abs(dx) <= 32)

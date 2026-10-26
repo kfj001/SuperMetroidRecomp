@@ -278,6 +278,31 @@ static void bg2_object_canvas(void) {
   memset(ram, 0, sizeof(ram)); memset(&ppu, 0, sizeof(ppu)); memset(rom, 0, sizeof(rom));
 }
 
+static void parallax_register_aliases(void) {
+  const SmViewport view = {682, 213, 32.0 / 9, true};
+  ResetFixtureRenderer(); memset(ram, 0, sizeof(ram)); memset(&ppu, 0, sizeof(ppu));
+  word(0x998, 8); word(0x7a5, 96); word(0x7a7, 32);
+  word(0x911, 512); word(0x917, 384); word(0x91b, 192); word(0x923, 768);
+  ppu.inidisp = 15; ppu.bgmode = 1; ppu.screenEnabled[0] = 2;
+  ppu.bgXsc[1] = 0x49; ppu.bgTileAdr = 0x10; ppu.cgram[1] = 31 << 5;
+  for (unsigned y = 0; y < 8; ++y) ppu.vram[4096 + y] = 255;
+  /* Actual Norfair $AA0E uses VOFS256 against offset768. Those are the
+   * same row of its 256-high map, not a world-Y displacement of -512. */
+  for (unsigned alias = 0; alias < 4; ++alias) {
+    ppu.hScroll[1] = 384 + (alias & 1 ? 512 : 0);
+    ppu.vScroll[1] = alias & 2 ? 768 : 256;
+    BeginFixtureFrame(ram, alias + 1);
+    for (unsigned y = 1; y <= 224; ++y) SmRendererCaptureLine(&ppu, y);
+    assert(SmRendererEndFrame(stock));
+    for (unsigned phase = 0; phase <= 2; ++phase) {
+      assert(SmRendererDraw(output, view, false, phase * .5));
+      for (int x = 0; x < view.width; ++x)
+        assert(output[100 * view.width + x] == 0x00ff00);
+    }
+  }
+  ResetFixtureRenderer(); memset(ram, 0, sizeof(ram)); memset(&ppu, 0, sizeof(ppu));
+}
+
 static void room_effect_matte(void) {
   const SmViewport view = {342, 43, 16.0 / 9, true};
   ResetFixtureRenderer(); memset(ram, 0, sizeof(ram)); memset(&ppu, 0, sizeof(ppu));
@@ -346,6 +371,7 @@ int main(int argc, char **argv) {
   hud_colour_math_margins();
   eye_beam_margins();
   static_background_room_edges();
+  parallax_register_aliases();
   bg2_object_canvas();
   room_effect_matte();
   cannon_motion();
