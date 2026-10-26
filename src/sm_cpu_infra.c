@@ -36,8 +36,9 @@ const RtlGameInfo kSuperMetroidGameInfo = {
   .state_save_extra = &SmStateSaveExtra,
   .state_load_extra = &SmStateLoadExtra,
   .on_state_loaded = &SmOnStateLoaded,
-  /* The guest's position in its own code is this port's fiber call chain, and
-   * a rollback that does not carry it leaves the fiber ahead of the RAM. */
+  .snapshot_guard_identity = &SmSnapshotIdentity,
+  .snapshot_preflight = &SmSnapshotPreflight,
+  /* Rollback restores the guest scheduler continuation alongside RAM. */
   .exec_state_bound = &SmExecStateBound,
   .exec_state_save  = &SmExecStateSave,
   .exec_state_load  = &SmExecStateLoad,

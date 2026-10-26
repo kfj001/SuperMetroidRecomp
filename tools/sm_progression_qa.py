@@ -115,7 +115,10 @@ class Session:
         self.config.write_text(
             '[General]\nAutosave=0\nSkipLauncher=1\nDisableFrameDelay=1\nRunAhead=0\n'
             '[Graphics]\nWindowScale=2\nVSync=0\nRenderer=software\nNewRenderer=1\nNoSpriteLimits=0\n'
-            '[Sound]\nEnableAudio=1\nVolume=0\n[GamepadMap]\nEnableGamepad1=false\nEnableGamepad2=false\n',
+            '[Sound]\nEnableAudio=1\nVolume=0\n'
+            '[Controller]\nSourceP1=0\nSourceP2=0\nSourceP3=0\nSourceP4=0\n'
+            '[GamepadMap]\nEnableGamepad1=false\nEnableGamepad2=false\n'
+            'EnableGamepad3=false\nEnableGamepad4=false\n',
             encoding='utf-8')
         (self.output / 'sm-video.ini').write_text(
             f'[SuperMetroidVideo]\nEnhancedRenderer={int(wide)}\nAspect=16:9\nPresentationEnabled=0\n',
@@ -128,7 +131,7 @@ class Session:
         # differently, so set both.
         env.update(SDL_AUDIODRIVER='dummy', SDL_AUDIO_DRIVER='dummy',
                    SDL_VIDEODRIVER='dummy', SDL_VIDEO_DRIVER='dummy',
-                   SNESRECOMP_DEBUG_PORT=str(port))
+                   SNESRECOMP_DEBUG_PORT=str(port), SNESRECOMP_CPU_TRACE_RING_ENTRIES='65536')
         self.capture_profile = capture_profile
         if capture_profile:
             env.update(SNESRECOMP_TIER2_CAPTURE='1',

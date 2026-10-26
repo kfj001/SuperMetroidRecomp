@@ -7,6 +7,74 @@ This is an experimental custom renderer. The requested worktree and Mods
 functionality is implemented; this is not a full-game visual-fidelity or
 sustained-performance certification.
 
+## October 25 feedback corrections
+
+HUD/dialogue BG3 pages remain screen-space through message HDMA and boss
+scrolling. Their empty HUD plane preserves opaque black for color math, so
+suppressing repeated UI texels does not expose power-bomb/boss fixed color.
+The taller `$5A` map also addresses the liquid FX page at VRAM `$5C00`.
+Only its UI page (`$5800..$5BFF`) is suppressed in the margins; classifying
+the entire map as UI incorrectly confined Crocomire's lava to 4:3. A
+regression fixture now crosses that page boundary on adjacent scanlines at
+all four supported test widths, while retaining the HUD/color-math tests.
+The authored room matte now clips the final world pixel, including liquid
+effects, and follows the terrain's interpolated raster camera.
+
+Extended enemy spritemaps identify BG2 tilemap children with `$FFFE`. These
+are sampled as one canvas containing their verified owner, rather than
+repeating a Mother Brain or Crocomire body every hardware tilemap width.
+Crocomire's ROM additionally parks BG2 at horizontal scroll256 outside the
+native view. Margin sampling reconstructs his unclamped position from the
+verified ROM owner instead of wrapping that hidden layer onto the edge.
+Crossing into or out of that parked state also uses owner interpolation;
+blending the parking register would slide the body in the wrong direction.
+The native raster is preserved. Tests cover both sides, four widths and
+intermediate phases, including moving across the original culling threshold.
+Samus's separate cannon sprite is verified against the original pose,
+animation-offset and character tables before receiving body interpolation.
+Native gameplay pixels and guest simulation are unchanged.
+
+Regression fixtures cover moving UI tilemaps, opaque-black subscreen math,
+single BG2 canvases, color-only room edges, signed door cameras, intermediate
+camera phases and cannon ownership rejection. Thirteen real tester captures
+pass native-row-30-through-223 and complete HUD layout comparisons at four
+widths with both HUD settings (104 cases). An adjacent recorded post-grapple
+pair also verifies cannon ownership; simulation-rate output stays exact.
+These checks do not certify the entire game's margins or identify the precise
+reported file-selection/phantom-door transition. Those reports remain tracked.
+
+The isolated renderer QA harness uses dummy video/audio by default and the
+shared host's profiling controls. Audio emulation can remain enabled without
+speaker output.
+
+Further Norfair captures identify a scroll-alias defect in room `$AA0E`:
+BG2 VOFS256 and the room offset768 address the same row of its 256-high
+hardware map. Recovering their difference modulo1024 invented a world-Y
+offset of -512 and emptied the extended background. Recovery and temporal
+interpolation now use each tilemap axis's actual period. The recorded
+49,664 native BG2 samples reconstructed from room data now match VRAM,
+where every sample differed before; native final output remains unchanged.
+
+All runtime policies now use the interruptible frame scheduler. The old
+fiber driver, including its unportable execution snapshots, is removed.
+`off/on/force/verify/auto` and legacy `lle/hle` all reach the Eye fixture
+with identical 3,900-frame guest traces when no replacements are registered.
+Policy names control promoted replacements at shared call sites, rather
+than selecting a different guest scheduler.
+
+Build-specific snapshots use the shared identity/CRC envelope and validate
+the SM extension before guest writes. `tools/test_frame_states.py` exercises
+real pause/unpause, health restoration, fresh-process continuation, movement,
+and full WRAM equality after five classes of rejected input. Supply a TCP
+build, verified ROM and artifacts directory with `--exe/--rom/--artifacts`.
+Native SRAM is unaffected. Old snapshots are deliberately rejected.
+
+Presentation history follows `RtlStateGeneration`: real load/rewind jumps
+invalidate it, while speculative rollback retains run-ahead's future raster.
+The renderer harness's `--run-ahead 1 --require-wide-content` gate with the
+Eye fixture checks actual extended world pixels after composition; width
+and guest-trace equality alone previously passed a black-margin fallback.
+
 ## October 2026 feedback regressions
 
 The HUD's BG3 tilemap can remain on the color-math subscreen after the

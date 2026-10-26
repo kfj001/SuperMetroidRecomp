@@ -79,6 +79,14 @@ def main() -> int:
     parser.add_argument("--xray-angle", type=lambda value: int(value, 0),
                         help="also require this captured beam angle (decimal or 0x hex)")
     parser.add_argument("--audio", action="store_true")
+    parser.add_argument('--execution-policy', default='off',
+                        choices=('off', 'on', 'force', 'verify', 'auto', 'lle', 'hle'))
+    parser.add_argument('--run-ahead', type=int, choices=range(5), default=0,
+                        help='shared runner range: 0..SNES_RUNAHEAD_MAX (4)')
+    parser.add_argument('--require-wide-content', action='store_true',
+                        help='fixture requires nonblack world pixels outside the native view')
+    parser.add_argument('--min-simulation-hz', type=float,
+                        help='require this wall-time delivery rate in paced fixture modes')
     parser.add_argument("--profile", action="store_true",
                         help="collect opt-in wall-time stage diagnostics")
     parser.add_argument("--profile-start-frame", type=int, default=1)
@@ -93,6 +101,8 @@ def main() -> int:
     exe, rom = args.exe.resolve(strict=True), args.rom.resolve(strict=True)
     if args.frames < 1 or args.timeout <= 0:
         parser.error("frames and timeout must be positive")
+    if args.min_simulation_hz is not None and args.min_simulation_hz <= 0:
+        parser.error('minimum simulation rate must be positive')
     if not 1 <= args.profile_start_frame <= args.frames:
         parser.error("profile start must be within the simulation run")
     root = args.artifacts.resolve()
@@ -107,6 +117,8 @@ def main() -> int:
         "audio_enabled": args.audio, "requested_fps": args.fps,
         "profiling_enabled": args.profile,
         "profile_start_frame": args.profile_start_frame,
+        "execution_policy": args.execution_policy,
+        "run_ahead": args.run_ahead,
     }
     reference = None
     for index, name in enumerate(args.modes):
@@ -118,13 +130,24 @@ def main() -> int:
             "[General]\nAutosave=0\nSkipLauncher=1\n"
             f"DisableFrameDelay={0 if paced else 1}\n"
             "[Graphics]\nWindowScale=2\nNewRenderer=1\nNoSpriteLimits=0\n"
-            f"[Sound]\nEnableAudio={int(args.audio)}\n",
+            f"[Sound]\nEnableAudio={int(args.audio)}\nVolume=0\n",
             encoding="utf-8")
+        # Scripted presses own the guest. A user typing in another app must
+        # not inject Start or a gamepad movement into a background QA run.
+        with (directory / 'config.ini').open('a', encoding='utf-8') as config:
+            config.write('\n[Controller]\nSourceP1=0\nSourceP2=0\nSourceP3=0\nSourceP4=0\n'
+                         '[GamepadMap]\nEnableGamepad1=false\nEnableGamepad2=false\n'
+                         'EnableGamepad3=false\nEnableGamepad4=false\n')
         (directory / "sm-video.ini").write_text(
             f"[SuperMetroidVideo]\nEnhancedRenderer={int(wide)}\n"
             f"Aspect=32:9\nPresentationEnabled={int(paced)}\n"
             f"PresentationFPS={args.fps}\nHudAnchored=1\n", encoding="utf-8")
         env = os.environ.copy()
+        # Automated QA preserves desktop focus and emulates audio silently.
+        # SDL2 and SDL3 use different spellings; set both explicitly.
+        env.update(SDL_VIDEODRIVER='dummy', SDL_VIDEO_DRIVER='dummy',
+                   SDL_AUDIODRIVER='dummy', SDL_AUDIO_DRIVER='dummy',
+                   SM_REPLAY_RECORD='0')
         # Diagnostic overrides from an interactive shell must not contaminate
         # the controlled run. Each executable process owns its own directory.
         for key in list(env):
@@ -133,6 +156,8 @@ def main() -> int:
         env.pop("SNESRECOMP_WIDESCREEN", None)
         env.pop("SM_PROFILE", None)
         env.pop("SM_PROFILE_START_FRAME", None)
+        env.pop("SNESRECOMP_HOST_PROFILE", None)
+        env.pop("SNESRECOMP_HOST_PROFILE_START_FRAME", None)
         env.pop("SM_DMA_TRACE", None)
         env.pop("SM_XRAY_TILE_REPORT", None)
         if args.capture_power_bomb:
@@ -147,11 +172,13 @@ def main() -> int:
         if args.capture_rotation and wide:
             env['SM_CAPTURE_ROTATION_PREFIX'] = 'rotation'
         if args.profile:
-            env["SM_PROFILE"] = "1"
-            env["SM_PROFILE_START_FRAME"] = str(args.profile_start_frame)
+            env["SNESRECOMP_HOST_PROFILE"] = "1"
+            env["SNESRECOMP_HOST_PROFILE_START_FRAME"] = str(args.profile_start_frame)
         env["SM_RUN_FRAMES"] = str(args.frames)
         env["SM_STATE_TRACE"] = "state.csv"
-        env["SNESRECOMP_DEBUG_PORT"] = str(4395 + index)
+        env["SNESRECOMP_DEBUG_PORT"] = '0'
+        env['SNESRECOMP_EXECUTION_MODE'] = args.execution_policy
+        env['SNESRECOMP_RUNAHEAD'] = str(args.run_ahead)
         env["SM_CAPTURE_FRAME"] = str(args.frames)
         env["SM_CAPTURE_PATH"] = "final.capture"
         env["SNESRECOMP_FRAME_BMP"] = "final.bmp"
@@ -230,6 +257,22 @@ def main() -> int:
                                "presentations": present, "seconds": seconds,
                                "render_width": width, "render_height": abs(height),
                                "presentation_hz": present / seconds if seconds else 0}
+        report['runs'][name]['simulation_hz'] = sim / seconds if seconds else 0
+        if paced and args.min_simulation_hz is not None and sim / seconds < args.min_simulation_hz:
+            raise RuntimeError(f'{name}: simulation delivery {sim / seconds:.3f} Hz '
+                               f'is below {args.min_simulation_hz:.3f} Hz')
+        if wide and args.require_wide_content:
+            if struct.unpack_from('<H', bitmap, 28)[0] != 32:
+                raise RuntimeError('wide-content check requires a 32-bit BMP')
+            start = struct.unpack_from('<I', bitmap, 10)[0]
+            extra = (width - 256) // 2
+            pixels = struct.unpack_from(f'<{width * abs(height)}I', bitmap, start)
+            margin = sum(bool(pixels[(y if height < 0 else abs(height)-1-y)*width+x] & 0xffffff)
+                         for y in range(30, abs(height)) for x in range(width)
+                         if x < extra or x >= extra + 256)
+            if margin < 64:
+                raise RuntimeError(f'{name}: missing extended world content ({margin} pixels)')
+            report['runs'][name]['extended_world_pixels'] = margin
         if args.require_xray and wide:
             report['runs'][name]['xray'] = require_xray_capture(directory / 'final.capture')
             if args.xray_angle is not None and report['runs'][name]['xray']['angle'] != args.xray_angle:
@@ -246,7 +289,9 @@ def main() -> int:
                 "presentation_hz": int(window[4]) / float(window[3]),
             }
             stages = re.findall(r"video profile: stage=(\S+) count=(\d+) total_ms=([\d.]+) mean_ms=([\d.]+) max_ms=([\d.]+) max_frame=(\d+)", log)
-            if len(stages) != 6:
+            required = {'guest', 'raster-capture', 'surface-acquire', 'compose',
+                        'upload-present', 'state-trace'}
+            if not required.issubset({s[0] for s in stages}) or len(stages) != len({s[0] for s in stages}):
                 raise RuntimeError(f"{name}: missing stage profiling output")
             report["runs"][name]["profile"] = {
                 stage: {"count": int(count), "total_ms": float(total),
@@ -255,6 +300,10 @@ def main() -> int:
                 for stage, count, total, mean, maximum, max_frame in stages
             }
             for stage, values in report["runs"][name]["profile"].items():
+                if stage not in required:
+                    if values['count'] and not args.profile_start_frame <= values['max_frame'] <= args.frames:
+                        raise RuntimeError(f'{name}: invalid {stage} profiling frame')
+                    continue
                 expected_count = args.frames - args.profile_start_frame + 1 if stage in (
                     "guest", "raster-capture", "state-trace") else int(window[4])
                 if values["count"] != expected_count or not args.profile_start_frame <= values["max_frame"] <= args.frames:

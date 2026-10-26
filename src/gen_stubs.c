@@ -5,80 +5,32 @@
  */
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "cpu_state.h"
 #include "common_rtl.h"
 #include "cpu_trace.h"
 #include "variables.h"
 #include "sm_rtl.h"
 
-/* WaitForNMI ($80:8338). The original routine raises waiting_for_nmi
- * ($7E:05B4) and spins until the NMI handler ($80:9583) clears it. In
- * the recompiled build there is no mid-frame NMI to clear it, so the
- * spin would never terminate. Replace the whole routine with a host
- * yield: raise the same WRAM handshake flag as the ROM, hand control
- * back to RunOneFrameOfGame (which runs the NMI handler and emulates the
- * frame), then continue. The recompiled NMI handler clears the flag; the
- * HLE must not clear it itself or the next NMI observes "not waiting"
- * and skips the queue-draining work.
- *
- * The HLE replaces the WHOLE routine, including its terminating RTL. Under
- * the Option-1 cpu->S ABI the caller's `JSL WaitForNMI` pushed a 3-byte
- * return frame that the real routine's RTL would pop; returning
- * RECOMP_RETURN_NORMAL signals a host-return, which (per _emit_return)
- * only happens AFTER the frame pop. So we must pop the 3-byte frame here —
- * otherwise it is orphaned and the 65816 stack leaks 3 bytes per vblank,
- * underflowing after ~1000 frames (the HdmaObjectHandler "runaway" crash). */
+/* Wait replacements unwind compiled calls to the interruptible scheduler.
+ * The original ROM bytes own the WRAM handshake and return-frame pop; the
+ * scheduler injects NMI at the polling boundary and resumes that guest PC. */
+static RecompReturn sm_scheduler_yield(CpuState *cpu, uint32_t pc) {
+  if (!interp_bridge_in_lle_scheduler()) {
+    fprintf(stderr, "[sm_rtl] wait $%06X called outside the frame scheduler\n", (unsigned)pc);
+    abort();
+  }
+  return interp_bridge_lle_yield_unwind(cpu, pc);
+}
 RecompReturn HleSmWaitForNmi(CpuState *cpu) {
-  /* Under the LLE loop driver there is no hosting game fiber. Preserve the
-   * guest JSL frame and unwind to the interpreter, which resumes at the real
-   * WaitForNMI bytes and stops at its asserted wait loop. */
-  if (interp_bridge_in_lle_scheduler())
-    return interp_bridge_lle_yield_unwind(
-        cpu, ((uint32)cpu->PB << 16) | 0x8338u);
-  waiting_for_nmi = 1;
-  sm_host_yield();
-  cpu->S = (uint16)(cpu->S + 3);  /* emulate RTL: pop the JSL return frame */
-  return RECOMP_RETURN_NORMAL;
+  /* Preserve the JSL frame and execute the real polling bytes under the
+   * interruptible scheduler; every runtime policy uses this continuation. */
+  return sm_scheduler_yield(cpu, ((uint32)cpu->PB << 16) | 0x8338u);
 }
 
 /* $82:E039: inline-parameter VRAM update coroutine. */
 RecompReturn HleSmDoorTransitionVramWait(CpuState *cpu) {
-  if (interp_bridge_in_lle_scheduler())
-    return interp_bridge_lle_yield_unwind(cpu, 0x82E039u);
-
-  const uint8 saved_db = cpu->DB;
-  uint16 ret = cpu_read16(cpu, 0x00, (uint16)(cpu->S + 1));
-  uint16 ptr = (uint16)(ret + 1);
-
-  cpu_write16(cpu, cpu->PB, 0x05C0, cpu_read16(cpu, cpu->PB, ptr));
-  ptr = (uint16)(ptr + 1);
-  cpu_write16(cpu, cpu->PB, 0x05C1, cpu_read16(cpu, cpu->PB, ptr));
-  ptr = (uint16)(ptr + 2);
-  cpu_write16(cpu, cpu->PB, 0x05BE, cpu_read16(cpu, cpu->PB, ptr));
-  ptr = (uint16)(ptr + 2);
-  cpu_write16(cpu, cpu->PB, 0x05C3, cpu_read16(cpu, cpu->PB, ptr));
-  ptr = (uint16)(ptr + 1);
-  cpu_write16(cpu, 0x00, (uint16)(cpu->S + 1), ptr);
-
-  uint16 wait = (uint16)(cpu_read16(cpu, saved_db, 0x05BC) | 0x8000u);
-  cpu_write16(cpu, saved_db, 0x05BC, wait);
-  cpu->A = wait;
-  cpu->_flag_Z = wait == 0;
-  cpu->_flag_N = (wait & 0x8000u) != 0;
-  cpu->P = (uint8)((cpu->P & ~0x82u) |
-                   (cpu->_flag_Z ? 0x02u : 0u) |
-                   (cpu->_flag_N ? 0x80u : 0u));
-
-  sm_host_yield();
-  wait = cpu_read16(cpu, saved_db, 0x05BC);
-  cpu->A = wait;
-  cpu->_flag_Z = wait == 0;
-  cpu->_flag_N = (wait & 0x8000u) != 0;
-  cpu->P = (uint8)((cpu->P & ~0x82u) |
-                   (cpu->_flag_Z ? 0x02u : 0u) |
-                   (cpu->_flag_N ? 0x80u : 0u));
-  cpu->S = (uint16)(cpu->S + 2);  /* emulate RTS */
-  return RECOMP_RETURN_NORMAL;
+  return sm_scheduler_yield(cpu, 0x82E039u);
 }
 
 RecompReturn HleSmWaitUntilEndOfVblank(CpuState *cpu) {

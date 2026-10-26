@@ -97,6 +97,8 @@ if(BUILD_TESTING AND NOT ANDROID)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/release_payload_test.py)
     add_test(NAME sm_coverage_campaign
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/coverage_campaign_test.py)
+    set_tests_properties(sm_coverage_campaign PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${SNESRECOMP_ROOT}/recompiler")
     add_test(NAME sm_replay_inspector
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/replay_diagnostic_test.py)
     add_subdirectory(${SNESRECOMP_ROOT}/runner/tests/diagnostics diagnostic-writer-tests)
@@ -285,6 +287,10 @@ execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
 set_property(SOURCE src/sm_replay.c APPEND PROPERTY COMPILE_DEFINITIONS
     SM_REPLAY_REVISION="${SM_REPLAY_REVISION}" SM_REPLAY_ENGINE="${SM_REPLAY_ENGINE}"
     SM_REPLAY_TARGET="${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}-${CMAKE_C_COMPILER_ID}-${CMAKE_C_COMPILER_VERSION}-${CMAKE_BUILD_TYPE}")
+string(SHA256 SM_SNAPSHOT_ID "${SM_REPLAY_SOURCE_ID};${SM_REPLAY_ENGINE};${CMAKE_SYSTEM_NAME};${CMAKE_SYSTEM_PROCESSOR};${CMAKE_C_COMPILER_ID};${CMAKE_C_COMPILER_VERSION};${CMAKE_BUILD_TYPE};${SNESRECOMP_ENABLE_TRACE}")
+string(SUBSTRING ${SM_SNAPSHOT_ID} 0 24 SM_SNAPSHOT_ID)
+set_property(SOURCE src/sm_rtl.c APPEND PROPERTY COMPILE_DEFINITIONS
+    SM_SNAPSHOT_ID="sm2-${SM_SNAPSHOT_ID}")
 # Every platform compiles and links the same generated program.
 snesrecomp_target_generated_code(SuperMetroidSNESRecomp ${SM_GEN_DIR})
 # gen_stubs.c holds this port's hand-written bodies for hle_func targets. They
@@ -311,7 +317,6 @@ snesrecomp_rom_identity(SuperMetroidSNESRecomp ${CMAKE_CURRENT_SOURCE_DIR}/rom_i
 # Win32 Fiber API on ucontext (desktop) / pthreads (Android) — sm_rtl.c's
 # single-fiber frame model runs on it. The Android backend in the framework
 # copy came from this port.
-snesrecomp_target_fiber_compat(SuperMetroidSNESRecomp)
 
 # Release version stamp: configure with -DSNESRECOMP_BUILD_VERSION=<ver>
 # (the CMake equivalent of the MSVC games' /p:SnesRecompBuildVersion); it

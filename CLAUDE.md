@@ -25,7 +25,7 @@ python tools/ingest_sm_decomp.py
 
 # Regenerate src/gen/ (deterministic; needs the ROM at repo root).
 # --strict-idempotent regenerates twice and requires byte-identical output.
-# --no-tests skips the framework test suite. Native analyzer needs rustup;
+# Native analyzer needs rustup;
 # SNESRECOMP_ANALYSIS_BACKEND=python selects the slower reference path.
 ./tools/regen.sh --strict-idempotent
 
@@ -69,9 +69,20 @@ in-launcher Generate & rebuild wizard are retired. Generated C stays private
 and is never committed or publicly packaged. See `docs/precompiled-releases.md`.
 
 
-### Single-fiber frame model (src/sm_rtl.c)
+### Interruptible frame scheduler (src/sm_rtl.c)
 
-Unlike MMX's multi-slot scheduler, Super Metroid runs as one linear program: reset falls into the main game loop (`$82:8948`), which calls `WaitForNMI` (`$80:8338`) from arbitrary call depth. The whole game therefore runs on ONE host fiber. `WaitForNMI` is HLE-replaced (`bank00.cfg` → body in `src/gen_stubs.c`) with a yield to the host; the host emulates the frame (NMI + PPU), then resumes the fiber, preserving the full C call stack. Architectural register state is saved/restored around each fiber switch. The Win32 Fiber API is shimmed onto ucontext (macOS/Linux) and onto pthread+condvar handoffs on Android (bionic has no makecontext/swapcontext) by the framework's `desktop/fiber_compat.c`, wired in with `snesrecomp_target_fiber_compat()`. The Android backend originated here and was moved up in 2026-09.
+All execution-policy labels use the same frame scheduler. It resumes the guest
+from its serialized continuation, executes until the next frame boundary, and
+unwinds host calls before returning to the runner. The NMI wait replacement in
+`src/gen_stubs.c` yields through this scheduler; it does not retain a host C
+stack or require fibers. CPU residue, the continuation, global frame counter
+and SPC state are included in current-build execution snapshots.
+
+File snapshots use the shared build-identity/CRC guard and a title-specific
+schema preflight before any guest state is written. Old snapshots are disposable;
+native SRAM remains a separate persistent-save contract. Speculative rollback
+preserves the already captured future raster, while real timeline loads reset
+renderer history through `RtlStateGeneration` in `src/main.c`.
 
 Other game-side runtime: `sm_cpu_infra.c` (game registration consumed by the runner), `sm_spc_player.c` (audio), `sm_post_mortem.c` (the `sm{}` crash-report section, registered through the framework hook), `main.c`, `sm_display.c`/`sm_video.c` (presentation geometry, aspect/HUD policy, the simulation/presentation clock).
 
@@ -86,7 +97,7 @@ helpers in `CMakeLists.txt`, rather than from a private fork in `src/`:
 | `src/post_mortem.c`, `.h` | `snesrecomp_target_post_mortem(TIER2)` |
 | `src/glsl_shader.c`, `.h` | via `snesrecomp_target_opengl()` |
 | `src/opengl.c`, `third_party/gl_core`, `third_party/stb` | `snesrecomp_target_opengl()` |
-| `src/fiber_compat.c`, `.h` | `snesrecomp_target_fiber_compat()` |
+| `src/fiber_compat.c`, `.h` | No longer needed by this title's scheduler |
 | inline SHA-256/CRC32 in `main.c`, `src/codegen_setup.c` | `snesrecomp_rom_identity()` → `snesrecomp_rom_identity.h`, from `rom_identity.txt` |
 
 The forks were roughly 2,400 lines, some identical to the framework's and some
