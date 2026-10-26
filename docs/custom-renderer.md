@@ -9,9 +9,14 @@ sustained-performance certification.
 
 ## October 25 feedback corrections
 
-HUD/dialogue BG3 maps remain screen-space through message HDMA and boss
+HUD/dialogue BG3 pages remain screen-space through message HDMA and boss
 scrolling. Their empty HUD plane preserves opaque black for color math, so
 suppressing repeated UI texels does not expose power-bomb/boss fixed color.
+The taller `$5A` map also addresses the liquid FX page at VRAM `$5C00`.
+Only its UI page (`$5800..$5BFF`) is suppressed in the margins; classifying
+the entire map as UI incorrectly confined Crocomire's lava to 4:3. A
+regression fixture now crosses that page boundary on adjacent scanlines at
+all four supported test widths, while retaining the HUD/color-math tests.
 The authored room matte now clips the final world pixel, including liquid
 effects, and follows the terrain's interpolated raster camera.
 

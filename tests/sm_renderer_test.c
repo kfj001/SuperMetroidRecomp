@@ -131,10 +131,8 @@ static void pause_menu_fade(void) {
 }
 
 static void hud_colour_math_margins(void) {
-  /* HUD and dialogue use the two sizes of the same screen-space BG3 map.
-   * Boss scrolling can move any of its rows/columns into a gameplay raster;
-   * neither those texels nor HDMA-scrolled message text is wider world art.
-   * Rain/fog/liquid maps at 5C remain genuine world layers. */
+  /* HUD/dialogue rows stay screen-space through boss/message scrolling.
+   * Liquid FX in the second page of $5A remain genuine world content. */
   const unsigned maps[] = {0x58, 0x5a, 0x5c};
   const SmViewport views[] = {{256, 0, 4.0 / 3, false},
       {342, 43, 16.0 / 9, true}, {448, 96, 21.0 / 9, true},
@@ -156,7 +154,7 @@ static void hud_colour_math_margins(void) {
     BeginFixtureFrame(ram, 1);
     for (unsigned y = 1; y <= 224; ++y) {
       ppu.hScroll[2] = y < 64 ? 0 : 108;
-      ppu.vScroll[2] = y < 128 ? 0 : 190;
+      ppu.vScroll[2] = y < 128 ? 0 : 384;
       SmRendererCaptureLine(&ppu, y);
     }
     assert(SmRendererEndFrame(stock));
@@ -173,6 +171,38 @@ static void hud_colour_math_margins(void) {
   }
   ResetFixtureRenderer(); memset(ram, 0, sizeof(ram));
   memset(&ppu, 0, sizeof(ppu)); memset(stock, 0, sizeof(stock));
+}
+
+static void shared_hud_liquid_map(void) {
+  const SmViewport views[] = {{256, 0, 4.0 / 3, false}, {342, 43, 16.0 / 9, true},
+      {448, 96, 21.0 / 9, true}, {682, 213, 32.0 / 9, true}};
+  ResetFixtureRenderer(); memset(ram, 0, sizeof(ram)); memset(&ppu, 0, sizeof(ppu));
+  word(0x998, 8); word(0x7a5, 128); word(0x7a7, 16); word(0x911, 768);
+  ppu.inidisp = 15; ppu.bgmode = 1; ppu.bgTileAdr = 0x400; ppu.bgXsc[2] = 0x5a;
+  ppu.screenEnabled[0] = 4; ppu.cgram[1] = 0x7fff; ppu.cgram[2] = 31 << 5;
+  for (unsigned tile = 0; tile < 1024; ++tile) {
+    ppu.vram[0x5800 + tile] = 1;  /* UI page, white */
+    ppu.vram[0x5c00 + tile] = 2;  /* FX page, green */
+  }
+  for (unsigned y = 0; y < 8; ++y) {
+    ppu.vram[0x4008 + y] = 255; ppu.vram[0x4010 + y] = 0xff00;
+  }
+  BeginFixtureFrame(ram, 1);
+  for (unsigned y = 1; y <= 224; ++y) {
+    ppu.hScroll[2] = 773; ppu.vScroll[2] = y < 192 ? 0 : 55;
+    SmRendererCaptureLine(&ppu, y);
+  }
+  assert(SmRendererEndFrame(stock));
+  for (unsigned v = 0; v < sizeof(views) / sizeof(views[0]); ++v) {
+    SmViewport view = views[v]; assert(SmRendererDraw(output, view, false, 1));
+    for (int x = 0; x < view.width; ++x) {
+      bool native = x >= view.extra && x < view.extra + 256;
+      assert(output[199 * view.width + x] == (native ? 0xffffffu : 0));
+      assert(output[200 * view.width + x] == 0x00ff00);
+      assert(output[223 * view.width + x] == 0x00ff00);
+    }
+  }
+  ResetFixtureRenderer(); memset(ram, 0, sizeof(ram)); memset(&ppu, 0, sizeof(ppu));
 }
 
 static void eye_beam_margins(void) {
@@ -395,6 +425,7 @@ static void cannon_motion(void) {
 int main(int argc, char **argv) {
   pause_menu_fade();
   hud_colour_math_margins();
+  shared_hud_liquid_map();
   eye_beam_margins();
   static_background_room_edges();
   parallax_register_aliases();
