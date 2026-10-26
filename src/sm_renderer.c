@@ -705,7 +705,7 @@ bool SmRendererXrayBlocks(const uint8_t ram[0x20000], uint16_t blocks[0x3200]) {
   return true;
 }
 
-typedef struct SmBg2Object { bool valid; int x, y; } SmBg2Object;
+typedef struct SmBg2Object { bool valid; int x, y; bool crocomire, parked; } SmBg2Object;
 /* Extended spritemaps explicitly tag BG2 tilemap children with $FFFE
  * ($A0:944A/$96CA). Their tilemap is one moving object, not repeating room
  * scenery. Derive ownership from that ROM format rather than boss IDs. */
@@ -733,7 +733,10 @@ static SmBg2Object bg2_object(const SmSourceFrame *f, const SmSourceFrame *old, 
       x = lerp_pixel(x + dx, x, alpha); y = lerp_pixel(y + dy, y, alpha);
     }
     if (result.valid && (result.x != x || result.y != y)) return (SmBg2Object){0};
-    result = (SmBg2Object){true, x, y};
+    const uint8_t *definition = rom_bytes(0xa0, read16(e, 0), 26);
+    bool crocomire = bank == 0xa4 && definition && definition[12] == 0xa4 &&
+        read16(definition, 18) == 0x8a5a && read16(definition, 24) == 0x8c04;
+    result = (SmBg2Object){true, x, y, crocomire, false};
   }
   return result;
 }
@@ -746,7 +749,7 @@ typedef struct SmBackgroundLine {
   const uint16_t *revealed;
   bool screen_space;
   bool object_canvas;
-  int canvas_x, canvas_y, canvas_width, canvas_height;
+  int canvas_x, canvas_y, canvas_width, canvas_height, canvas_scroll_x;
 } SmBackgroundLine;
 /* Bit 11 is unused by the priority/layer/palette pixel encoding. A cleared
  * HUD plane is opaque black, unlike a transparent subscreen backdrop which
@@ -779,7 +782,14 @@ static SmBackgroundLine background_line(const Ppu *p, const uint8_t *room, unsig
     b.object_canvas = true;
     b.canvas_width = b.size * (b.sc & 1 ? 64 : 32);
     b.canvas_height = b.size * (b.sc & 2 ? 64 : 32);
-    b.canvas_x = object.x - ((object.x + b.scroll_x) & (b.canvas_width - 1));
+    b.canvas_scroll_x = b.scroll_x;
+    /* $A4:8BA4 parks Crocomire's BG2 at HOFS256 when outside the native
+     * viewport. Sampling that parking position past X255 wraps his face
+     * back onto the edge. Recover its unclamped owner-relative placement
+     * for margins only; native pixels retain the original raster register. */
+    if (object.crocomire && (object.parked || b.scroll_x == 256))
+      b.canvas_scroll_x = 51 - object.x;
+    b.canvas_x = object.x - ((object.x + b.canvas_scroll_x) & (b.canvas_width - 1));
     b.canvas_y = object.y - ((object.y + b.scroll_y) & (b.canvas_height - 1));
   }
   b.bpp = layer == 2 ? 2 : 4;
@@ -835,7 +845,8 @@ static uint16_t background_pixel(const SmBackgroundLine *b, const uint16_t *vram
     px = wx & 1023;
     py = wy & 1023;
   } else {
-    px = (x + b->scroll_x) & 1023; py = (y + b->scroll_y) & 1023;
+    int scroll_x = margin && b->object_canvas ? b->canvas_scroll_x : b->scroll_x;
+    px = (x + scroll_x) & 1023; py = (y + b->scroll_y) & 1023;
     int tx = px >> b->shift, ty = py >> b->shift;
     unsigned sc = b->sc;
     unsigned address = (sc & 0xfc) * 256 + (tx & 31) + (ty & 31) * 32;
@@ -1931,11 +1942,14 @@ bool SmRendererDraw(uint32_t *out, SmViewport viewport, bool hud_anchored, doubl
         transform = SmMode7Interpolate(
             SmMode7Transform(old.m7matrix, old.m7sel, mode7_y), transform, alpha);
     }
+    SmBg2Object line_bg2 = bg2;
+    line_bg2.parked = scanout.hScroll[1] == 256;
     /* Interpolate raster scroll registers, not the final composed image.
      * Layout/mode changes and large jumps snap to the current frame. */
     if (previous && alpha < 1) {
       Ppu old;
       memcpy(&old, previous->lines[y].registers, PPU_SAVESTATE_REGS_SIZE);
+      line_bg2.parked |= old.hScroll[1] == 256;
       if (old.bgmode == scanout.bgmode && old.bgTileAdr == scanout.bgTileAdr &&
           !memcmp(old.bgXsc, scanout.bgXsc, sizeof(old.bgXsc))) {
         for (int layer = 0; layer < (mode == 7 ? 0 : 3); ++layer) {
@@ -1956,7 +1970,7 @@ bool SmRendererDraw(uint32_t *out, SmViewport viewport, bool hud_anchored, doubl
     SmBackgroundLine background_lines[3];
     if (mode == 1)
       for (unsigned layer = 0; layer < 3; ++layer)
-        background_lines[layer] = background_line(&scanout, f->ram, layer, bg2);
+        background_lines[layer] = background_line(&scanout, f->ram, layer, line_bg2);
     if (xray_reveal && mode == 1 && scanout.bgXsc[1] == 0x49 && scanout.windowsel == 0x8008c8) {
       background_lines[1].room = f->ram;
       background_lines[1].revealed = xray_blocks;

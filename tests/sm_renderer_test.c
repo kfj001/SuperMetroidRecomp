@@ -308,6 +308,48 @@ static void bg2_object_canvas(void) {
   memset(ram, 0, sizeof(ram)); memset(&ppu, 0, sizeof(ppu)); memset(rom, 0, sizeof(rom));
 }
 
+static void crocomire_parked_bg2(void) {
+  const SmViewport views[] = {{256, 0, 4.0 / 3, false}, {342, 43, 16.0 / 9, true},
+      {448, 96, 21.0 / 9, true}, {682, 213, 32.0 / 9, true}};
+  const int positions[][2] = {{-300, -292}, {-160, -152}, {340, 348},
+      {400, 408}, {700, 708}, {333, 341}, {341, 333}, {-136, -128}, {-128, -136}};
+  for (unsigned i = 0; i < sizeof(positions) / sizeof(positions[0]); ++i) {
+    ResetFixtureRenderer(); memset(ram, 0, sizeof(ram)); memset(&ppu, 0, sizeof(ppu));
+    memset(rom, 0, sizeof(rom)); SmRendererSetRom(rom, sizeof(rom));
+    word(0x998, 8); word(0x7a5, 128); word(0x7a7, 16);
+    word(0x911, 768); word(0x91b, 0x101);
+    word(0xf78, 0xddbf); word(0xf7e, 120); word(0xf88, 4);
+    word(0xf8e, 0x8000); ram[0xfa6] = 0xa4;
+    rom[0x105dbf + 12] = 0xa4;
+    romword(0x105dbf + 18, 0x8a5a); romword(0x105dbf + 24, 0x8c04);
+    romword(0x120000, 1); romword(0x120006, 0x9000); romword(0x121000, 0xfffe);
+    ppu.inidisp = 15; ppu.bgmode = 1; ppu.screenEnabled[0] = 2;
+    ppu.bgXsc[1] = 0x49; ppu.bgTileAdr = 0x10; ppu.cgram[1] = 31;
+    ppu.hScroll[1] = 256; ppu.vram[0x4800 + 12 * 32] = 1;
+    for (unsigned y = 0; y < 8; ++y) ppu.vram[4096 + 16 + y] = 255;
+    for (unsigned frame = 1; frame <= 2; ++frame) {
+      int owner_x = positions[i][frame - 1];
+      word(0xf7a, 768 + owner_x);
+      ppu.hScroll[1] = owner_x >= 335 || owner_x < -128 ? 256 : (51 - owner_x) & 1023;
+      BeginFixtureFrame(ram, frame);
+      for (unsigned y = 1; y <= 224; ++y) SmRendererCaptureLine(&ppu, y);
+      assert(SmRendererEndFrame(stock));
+    }
+    for (unsigned v = 0; v < sizeof(views) / sizeof(views[0]); ++v)
+      for (unsigned phase = 0; phase <= 2; ++phase) {
+        SmViewport view = views[v]; assert(SmRendererDraw(output, view, false, phase * .5));
+        int left = positions[i][0] + (positions[i][1] - positions[i][0]) * (int)phase / 2 - 51;
+        for (int x = 0; x < view.width; ++x) {
+          int native_x = x - view.extra;
+          bool body = native_x >= left && native_x < left + 8;
+          assert(output[100 * view.width + x] == (body ? 0xff0000u : 0));
+        }
+      }
+  }
+  ResetFixtureRenderer(); SmRendererSetRom(NULL, 0);
+  memset(ram, 0, sizeof(ram)); memset(&ppu, 0, sizeof(ppu)); memset(rom, 0, sizeof(rom));
+}
+
 static void parallax_register_aliases(void) {
   const SmViewport view = {682, 213, 32.0 / 9, true};
   ResetFixtureRenderer(); memset(ram, 0, sizeof(ram)); memset(&ppu, 0, sizeof(ppu));
@@ -431,6 +473,7 @@ int main(int argc, char **argv) {
   parallax_register_aliases();
   door_layout_handover();
   bg2_object_canvas();
+  crocomire_parked_bg2();
   room_effect_matte();
   cannon_motion();
   raster_storage();
