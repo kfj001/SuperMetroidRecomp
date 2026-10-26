@@ -79,6 +79,11 @@ def main() -> int:
     parser.add_argument("--xray-angle", type=lambda value: int(value, 0),
                         help="also require this captured beam angle (decimal or 0x hex)")
     parser.add_argument("--audio", action="store_true")
+    parser.add_argument('--execution-policy', default='off',
+                        choices=('off', 'on', 'force', 'verify', 'auto', 'lle', 'hle'))
+    parser.add_argument('--run-ahead', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--require-wide-content', action='store_true',
+                        help='fixture requires nonblack world pixels outside the native view')
     parser.add_argument("--profile", action="store_true",
                         help="collect opt-in wall-time stage diagnostics")
     parser.add_argument("--profile-start-frame", type=int, default=1)
@@ -107,6 +112,8 @@ def main() -> int:
         "audio_enabled": args.audio, "requested_fps": args.fps,
         "profiling_enabled": args.profile,
         "profile_start_frame": args.profile_start_frame,
+        "execution_policy": args.execution_policy,
+        "run_ahead": args.run_ahead,
     }
     reference = None
     for index, name in enumerate(args.modes):
@@ -165,6 +172,8 @@ def main() -> int:
         env["SM_RUN_FRAMES"] = str(args.frames)
         env["SM_STATE_TRACE"] = "state.csv"
         env["SNESRECOMP_DEBUG_PORT"] = '0'
+        env['SNESRECOMP_EXECUTION_MODE'] = args.execution_policy
+        env['SNESRECOMP_RUNAHEAD'] = str(args.run_ahead)
         env["SM_CAPTURE_FRAME"] = str(args.frames)
         env["SM_CAPTURE_PATH"] = "final.capture"
         env["SNESRECOMP_FRAME_BMP"] = "final.bmp"
@@ -243,6 +252,18 @@ def main() -> int:
                                "presentations": present, "seconds": seconds,
                                "render_width": width, "render_height": abs(height),
                                "presentation_hz": present / seconds if seconds else 0}
+        if wide and args.require_wide_content:
+            if struct.unpack_from('<H', bitmap, 28)[0] != 32:
+                raise RuntimeError('wide-content check requires a 32-bit BMP')
+            start = struct.unpack_from('<I', bitmap, 10)[0]
+            extra = (width - 256) // 2
+            pixels = struct.unpack_from(f'<{width * abs(height)}I', bitmap, start)
+            margin = sum(bool(pixels[(y if height < 0 else abs(height)-1-y)*width+x] & 0xffffff)
+                         for y in range(30, abs(height)) for x in range(width)
+                         if x < extra or x >= extra + 256)
+            if margin < 64:
+                raise RuntimeError(f'{name}: missing extended world content ({margin} pixels)')
+            report['runs'][name]['extended_world_pixels'] = margin
         if args.require_xray and wide:
             report['runs'][name]['xray'] = require_xray_capture(directory / 'final.capture')
             if args.xray_angle is not None and report['runs'][name]['xray']['angle'] != args.xray_angle:

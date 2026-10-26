@@ -65,6 +65,18 @@ extern uint8_t g_ram[0x20000];
 static const char *kSmVideoConfig = "sm-video.ini";
 static SmViewport g_sm_viewport;
 static uint32_t g_sm_output[SM_MAX_WIDTH * SM_HEIGHT];
+static uint64_t g_sm_capture_generation;
+
+/* The shared generation changes on visible timeline jumps and is preserved
+ * across speculative rollback. A rollback's on_state_loaded hook must not
+ * erase the future raster that run-ahead has just captured for presentation. */
+static void SmSyncCaptureGeneration(void) {
+  uint64_t generation = RtlStateGeneration();
+  if (generation != g_sm_capture_generation) {
+    SmRendererReset();
+    g_sm_capture_generation = generation;
+  }
+}
 
 static bool SmCustomRendererEnabled(void) {
   return g_sm_video.enhanced || g_sm_video.fps_enabled;
@@ -127,6 +139,7 @@ static void SmPrepareFrame(int drawable_w, int drawable_h, int *frame_w, int *fr
 /* Simulation owns these: the renderer's per-frame capture runs exactly once
  * per simulated frame, never for an interpolated present. */
 static void SmBeginSimFrame(unsigned number) {
+  SmSyncCaptureGeneration();
   if (SmCustomRendererEnabled()) SmRendererBeginFrame(g_ram, number);
 }
 
@@ -144,6 +157,7 @@ static int SmDrawFrame(uint8_t *dst, size_t pitch, const uint8_t *field,
                        int frame_w, int frame_h, double alpha) {
   if (!SmCustomRendererEnabled())
     return 0;
+  SmSyncCaptureGeneration();
   if (!SmRendererDraw(g_sm_output, g_sm_viewport, g_sm_video.hud_anchored, alpha)) {
     memset(g_sm_output, 0, sizeof(g_sm_output));
     for (int y = 0; y < SM_HEIGHT; ++y)
