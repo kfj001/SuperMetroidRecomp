@@ -119,7 +119,10 @@ static void SmOnRomLoaded(const uint8_t *rom, size_t size) {
 
 static void SmOnReset(void) {
   SmRendererReset();
-  SmPauseOptions_SetActive(false);
+  /* The host also sends this notification after loading a snapshot. Keep
+   * the panel flag restored by SmOnStateLoaded when the guest is paused;
+   * ordinary gameplay and actual reset states close it through this sync. */
+  SmPauseOptions_SyncToGuest();
 }
 
 /* Door loading can take longer than a frame. Keep its debt only while the
