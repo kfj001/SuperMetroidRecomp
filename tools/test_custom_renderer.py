@@ -84,6 +84,8 @@ def main() -> int:
     parser.add_argument('--run-ahead', type=int, choices=(0, 1), default=0)
     parser.add_argument('--require-wide-content', action='store_true',
                         help='fixture requires nonblack world pixels outside the native view')
+    parser.add_argument('--min-simulation-hz', type=float,
+                        help='require this wall-time delivery rate in paced fixture modes')
     parser.add_argument("--profile", action="store_true",
                         help="collect opt-in wall-time stage diagnostics")
     parser.add_argument("--profile-start-frame", type=int, default=1)
@@ -98,6 +100,8 @@ def main() -> int:
     exe, rom = args.exe.resolve(strict=True), args.rom.resolve(strict=True)
     if args.frames < 1 or args.timeout <= 0:
         parser.error("frames and timeout must be positive")
+    if args.min_simulation_hz is not None and args.min_simulation_hz <= 0:
+        parser.error('minimum simulation rate must be positive')
     if not 1 <= args.profile_start_frame <= args.frames:
         parser.error("profile start must be within the simulation run")
     root = args.artifacts.resolve()
@@ -252,6 +256,10 @@ def main() -> int:
                                "presentations": present, "seconds": seconds,
                                "render_width": width, "render_height": abs(height),
                                "presentation_hz": present / seconds if seconds else 0}
+        report['runs'][name]['simulation_hz'] = sim / seconds if seconds else 0
+        if paced and args.min_simulation_hz is not None and sim / seconds < args.min_simulation_hz:
+            raise RuntimeError(f'{name}: simulation delivery {sim / seconds:.3f} Hz '
+                               f'is below {args.min_simulation_hz:.3f} Hz')
         if wide and args.require_wide_content:
             if struct.unpack_from('<H', bitmap, 28)[0] != 32:
                 raise RuntimeError('wide-content check requires a 32-bit BMP')
