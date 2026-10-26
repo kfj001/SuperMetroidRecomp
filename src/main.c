@@ -47,6 +47,7 @@
 #include "sm_display.h"
 #include "sm_renderer.h"
 #include "sm_video.h"
+#include "sm_pause_options.h"
 #include "sm_spc_player.h"
 #include "sm_replay.h"
 #include "sm_startup.h"
@@ -62,7 +63,7 @@ extern const RtlGameInfo kSuperMetroidGameInfo;
 extern Snes *g_snes;
 extern uint8_t g_ram[0x20000];
 
-static const char *kSmVideoConfig = "sm-video.ini";
+static const char *kSmVideoConfig = SM_VIDEO_CONFIG_FILE;
 static SmViewport g_sm_viewport;
 static uint32_t g_sm_output[SM_MAX_WIDTH * SM_HEIGHT];
 static uint64_t g_sm_capture_generation;
@@ -118,6 +119,7 @@ static void SmOnRomLoaded(const uint8_t *rom, size_t size) {
 
 static void SmOnReset(void) {
   SmRendererReset();
+  SmPauseOptions_SetActive(false);
 }
 
 /* Door loading can take longer than a frame. Keep its debt only while the
@@ -140,6 +142,7 @@ static void SmPrepareFrame(int drawable_w, int drawable_h, int *frame_w, int *fr
  * per simulated frame, never for an interpolated present. */
 static void SmBeginSimFrame(unsigned number) {
   SmSyncCaptureGeneration();
+  SmPauseOptions_SyncToGuest();
   if (SmCustomRendererEnabled()) SmRendererBeginFrame(g_ram, number);
 }
 
@@ -155,15 +158,21 @@ static void SmEndSimFrame(const uint8_t *field, unsigned number) {
 
 static int SmDrawFrame(uint8_t *dst, size_t pitch, const uint8_t *field,
                        int frame_w, int frame_h, double alpha) {
-  if (!SmCustomRendererEnabled())
+  const bool overlay = SmPauseOptions_Visible();
+  if (!SmCustomRendererEnabled() && !overlay)
     return 0;
   SmSyncCaptureGeneration();
-  if (!SmRendererDraw(g_sm_output, g_sm_viewport, g_sm_video.hud_anchored, alpha)) {
+  int drew = 0;
+  if (SmCustomRendererEnabled())
+    drew = SmRendererDraw(g_sm_output, g_sm_viewport, g_sm_video.hud_anchored, alpha);
+  if (!drew) {
     memset(g_sm_output, 0, sizeof(g_sm_output));
     for (int y = 0; y < SM_HEIGHT; ++y)
       memcpy(g_sm_output + y * frame_w + g_sm_viewport.extra,
              field + y * 256 * 4, 256 * 4);
   }
+  if (overlay)
+    SmPauseOptions_Render(g_sm_output, frame_w, frame_w, frame_h);
   RtlWidescreenPresent(dst, pitch, (const uint8_t *)g_sm_output, frame_w, frame_h);
   return 1;
 }
