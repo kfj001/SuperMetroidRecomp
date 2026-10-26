@@ -81,7 +81,8 @@ def main() -> int:
     parser.add_argument("--audio", action="store_true")
     parser.add_argument('--execution-policy', default='off',
                         choices=('off', 'on', 'force', 'verify', 'auto', 'lle', 'hle'))
-    parser.add_argument('--run-ahead', type=int, choices=(0, 1), default=0)
+    parser.add_argument('--run-ahead', type=int, choices=range(5), default=0,
+                        help='shared runner range: 0..SNES_RUNAHEAD_MAX (4)')
     parser.add_argument('--require-wide-content', action='store_true',
                         help='fixture requires nonblack world pixels outside the native view')
     parser.add_argument('--min-simulation-hz', type=float,
