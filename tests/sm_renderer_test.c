@@ -303,6 +303,32 @@ static void parallax_register_aliases(void) {
   ResetFixtureRenderer(); memset(ram, 0, sizeof(ram)); memset(&ppu, 0, sizeof(ppu));
 }
 
+static void door_layout_handover(void) {
+  const SmViewport view = {342, 43, 16.0 / 9, true};
+  for (unsigned layer = 0; layer < 2; ++layer) {
+    ResetFixtureRenderer(); memset(ram, 0, sizeof(ram)); memset(&ppu, 0, sizeof(ppu));
+    word(0x7a5, 64); word(0x7a7, 32); word(0x911, 256); word(0x917, 256);
+    ppu.inidisp = 15; ppu.bgmode = 1; ppu.screenEnabled[0] = 1u << layer;
+    ppu.bgXsc[layer] = 0x48; ppu.bgTileAdr = 0x11; ppu.cgram[1] = 31 << 5;
+    for (unsigned row = 0; row < 8; ++row) ppu.vram[4096 + 16 + row] = 255;
+    for (unsigned q = 0; q < 4; ++q) word(0xa000 + 2 * q, 1);
+    /* VRAM retains only the departing door; the decompressed destination
+     * would paint the entire left margin if sampled with the old camera. */
+    ppu.vram[0x4800 + 12 * 32 + 30] = 1;
+    for (unsigned frame = 1; frame <= 3; ++frame) {
+      word(0x998, frame == 3 ? 8 : 11);
+      word(0x99c, frame == 2 ? 0xe3c0 : 0xe38e);
+      BeginFixtureFrame(ram, frame);
+      for (unsigned y = 1; y <= 224; ++y) SmRendererCaptureLine(&ppu, y);
+      assert(SmRendererEndFrame(stock));
+      assert(SmRendererDraw(output, view, false, 1));
+      assert(output[100 * view.width + view.extra + 240] == 0x00ff00);
+      assert(output[100 * view.width + view.extra - 1] == (frame == 1 ? 0 : 0x00ff00));
+    }
+  }
+  ResetFixtureRenderer(); memset(ram, 0, sizeof(ram)); memset(&ppu, 0, sizeof(ppu));
+}
+
 static void room_effect_matte(void) {
   const SmViewport view = {342, 43, 16.0 / 9, true};
   ResetFixtureRenderer(); memset(ram, 0, sizeof(ram)); memset(&ppu, 0, sizeof(ppu));
@@ -372,6 +398,7 @@ int main(int argc, char **argv) {
   eye_beam_margins();
   static_background_room_edges();
   parallax_register_aliases();
+  door_layout_handover();
   bg2_object_canvas();
   room_effect_matte();
   cannon_motion();

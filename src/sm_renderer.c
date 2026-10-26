@@ -794,7 +794,13 @@ static SmBackgroundLine background_line(const Ppu *p, const uint8_t *room, unsig
     b.camera_x = (int16_t)read16(room, 0x911); b.camera_y = (int16_t)read16(room, 0x915);
     b.world_x = b.camera_x; b.world_y = b.camera_y;
   }
-  if (b.size == 8 && (layer == 0 || (layer == 1 && !(room[0x91b] & 1)))) {
+  /* $82:E36E installs the destination level before $82:E38E initializes
+   * its camera and ring-buffer offsets. That one frame still scans out the
+   * departing door. Combining the new level with the old camera invents a
+   * second door in the opposite margin; retain hardware tilemap addressing
+   * until the destination scroll setup has run. */
+  bool layout_ready = read16(room, 0x998) != 11 || read16(room, 0x99c) != 0xe38e;
+  if (layout_ready && b.size == 8 && (layer == 0 || (layer == 1 && !(room[0x91b] & 1)))) {
     /* Native scroll includes ring-buffer offsets. Recover the raster delta
      * relative to the live camera, then sample decompressed world data. */
     int camera_x = (int16_t)read16(room, layer ? 0x917 : 0x911);
