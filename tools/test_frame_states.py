@@ -42,9 +42,11 @@ def main():
     extension = schema.find(b'SFMS')
     assert extension >= 48
     struct.pack_into('<I', schema, extension + 4, 0xffffffff)
+    viewport = bytearray(state)
+    struct.pack_into('<I', viewport, extension + 28, 215)
     invalid = {'truncated': state[:-10], 'bad-crc': bytes(corrupt),
                'foreign-build': checksum(foreign), 'unwrapped-legacy': state[48:-4],
-               'bad-title-schema': checksum(schema)}
+               'bad-title-schema': checksum(schema), 'bad-simulation-viewport': checksum(viewport)}
     fresh = Session(args.exe, args.rom, root/'fresh', floor='hle', wide=True, capture_profile=False)
     try:
         shutil.copyfile(root/'source/saves/save7.sav', root/'fresh/saves/save7.sav')

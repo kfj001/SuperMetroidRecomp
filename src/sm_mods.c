@@ -1,4 +1,5 @@
 #include "sm_mods.h"
+#include "sm_activity.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,7 +12,7 @@ static const char *const packages[] = {"sm-widescreen", "sm-presentation-fps"};
 static const char *const features[] = {"widescreen", "presentation-fps"};
 static const char *const names[] = {"Widescreen", "Presentation FPS"};
 static const char *const descriptions[] = {
-  "Render a wider room view with optional HUD anchoring.",
+  "Render a wider room view and keep enemies active throughout it, with optional HUD anchoring.",
   "Interpolate rendered motion at your display rate while keeping game timing unchanged."
 };
 static const char *const aspects[] = {"Fit", "16:9", "21:9", "32:9"};
@@ -92,6 +93,9 @@ static int enable(void *ctx, const char *package, const char *feature, int on) {
   (void)ctx;
   int kind = identity(package, feature);
   if (kind < 0) return 0;
+  if (!kind && !SmActivityGeometryMutable()) {
+    COPY(error, "The initial host view stays fixed during this netplay match."); return 0;
+  }
   if (kind) video->fps_enabled = on != 0;
   else video->enhanced = on != 0;
   return 1;
@@ -101,6 +105,9 @@ static int set_option(void *ctx, const char *package, const char *feature,
   (void)ctx;
   int kind = identity(package, feature);
   if (kind < 0 || !value) return 0;
+  if (!kind && option && !strcmp(option, "aspect") && !SmActivityGeometryMutable()) {
+    COPY(error, "The initial host view stays fixed during this netplay match."); return 0;
+  }
   for (int i = 0; i < 8; ++i) {
     const char *candidate = choice(kind, option, i);
     if (!candidate || strcmp(candidate, value)) continue;

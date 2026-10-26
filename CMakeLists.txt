@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(SuperMetroidSNESRecomp VERSION 0.3.15 LANGUAGES C)
+project(SuperMetroidSNESRecomp VERSION 0.3.16 LANGUAGES C)
 
 # Cross-platform (macOS/Linux/MinGW) build for SuperMetroidSNESRecomp.
 #
@@ -11,6 +11,8 @@ project(SuperMetroidSNESRecomp VERSION 0.3.15 LANGUAGES C)
 #   - SDL2 + OpenGL
 
 set(CMAKE_C_STANDARD 11)
+option(SM_VIEW_ACTIVITY "Process enemies throughout the visible wider view" ON)
+add_compile_definitions(SM_VIEW_ACTIVITY=$<BOOL:${SM_VIEW_ACTIVITY}>)
 option(SM_RASTER_FULL_COPY "Use full-copy VRAM raster storage as the reference" OFF)
 option(SM_RASTER_TRACK_WRITES "Track VRAM writes for title-owned capture intervals" ON)
 add_compile_definitions(SM_RASTER_TRACK_WRITES=$<BOOL:${SM_RASTER_TRACK_WRITES}>)
@@ -58,6 +60,9 @@ list(APPEND SNESRECOMP_RUNNER_INCLUDE_DIRS ${SNESRECOMP_ROOT}/runner/src/desktop
 # roots through the owning helper, or directly for focused tests/tools that
 # compile only that layer.
 if(BUILD_TESTING AND NOT ANDROID)
+    add_executable(sm_activity_test tests/sm_activity_test.c src/sm_activity.c)
+    target_include_directories(sm_activity_test PRIVATE src)
+    add_test(NAME sm_visible_enemy_activity COMMAND sm_activity_test)
     add_subdirectory(${SNESRECOMP_ROOT}/runner/tests/raster_snapshot raster-snapshot-tests)
     add_executable(sm_display_test tests/sm_display_test.c src/sm_display.c)
     target_include_directories(sm_display_test PRIVATE
@@ -129,6 +134,25 @@ if(BUILD_TESTING AND NOT ANDROID)
     add_test(NAME sm_custom_video
         COMMAND sm_video_test ${CMAKE_CURRENT_BINARY_DIR}/sm-video-test.ini)
 
+    # The pause menu's Options tab: guest pause-state effects and pixels. It
+    # saves sm-video.ini, so it runs in its own directory, never beside the
+    # game executable.
+    add_executable(sm_pause_options_test
+        tests/sm_pause_options_test.c src/sm_pause_options.c src/sm_video.c
+        ${SNESRECOMP_ROOT}/runner/src/desktop/host_clock.c
+        ${SNESRECOMP_ROOT}/runner/src/snes_overlay_draw.c
+        ${RECOMP_UI_ROOT}/src/common/recomp_runtime_ui.c)
+    target_include_directories(sm_pause_options_test PRIVATE src ${RECOMP_UI_ROOT}/src
+        ${SNESRECOMP_RUNNER_INCLUDE_DIRS}
+        ${SNESRECOMP_ROOT}/runner/src/desktop)
+    # sm_pause_options.c includes host_api.h, which includes the SDL boundary
+    # header; the test fakes the API so no SDL runs, but the includes and
+    # compile definitions still need the selected backend.
+    snesrecomp_target_sdl(sm_pause_options_test)
+    file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/sm_pause_options_test.d)
+    add_test(NAME sm_pause_options COMMAND sm_pause_options_test
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/sm_pause_options_test.d)
+
     add_executable(sm_renderer_test tests/sm_renderer_test.c src/sm_renderer.c src/sm_mode7.c)
     target_include_directories(sm_renderer_test PRIVATE
         src ${SNESRECOMP_RUNNER_INCLUDE_DIRS})
@@ -162,7 +186,7 @@ if(BUILD_TESTING AND NOT ANDROID)
     # Assertions are the test oracle, including Release configurations.
     foreach(sm_test sm_display_test sm_overlay_blit_test
             sm_savestate_gesture_test ppu_window_test sm_video_test
-            sm_renderer_test sm_mode7_test)
+            sm_pause_options_test sm_renderer_test sm_mode7_test)
         if(MSVC)
             target_compile_options(${sm_test} PRIVATE /UNDEBUG)
         else()
@@ -171,6 +195,7 @@ if(BUILD_TESTING AND NOT ANDROID)
     endforeach()
     if(NOT WIN32)
         target_link_libraries(sm_video_test PRIVATE m)
+        target_link_libraries(sm_pause_options_test PRIVATE m)
         target_link_libraries(sm_renderer_test PRIVATE m)
         target_link_libraries(sm_render_capture PRIVATE m)
         target_link_libraries(sm_mode7_test PRIVATE m)
@@ -212,6 +237,8 @@ set(SM_HOST_SOURCES
     src/sm_mode7.c        # SM's mode-7 object projection
     src/sm_display.c      # SM presentation geometry
     src/sm_video.c        # SM aspect/HUD policy + presentation clock
+    src/sm_activity.c src/sm_activity_host.c
+    src/sm_pause_options.c # 3rd pause tab: the Game Options overlay
     src/sm_mods.c         # built-in presentation mod provider
 )
 
@@ -273,7 +300,7 @@ file(GLOB SM_REPLAY_ID_INPUTS CONFIGURE_DEPENDS src/*.c src/*.h recomp/*.cfg pro
 list(APPEND SM_REPLAY_ID_INPUTS ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
     ${CMAKE_CURRENT_SOURCE_DIR}/framework_pins.txt ${CMAKE_CURRENT_SOURCE_DIR}/VERSION)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${SM_REPLAY_ID_INPUTS})
-set(SM_REPLAY_SOURCE_ID "${CMAKE_C_FLAGS};${CMAKE_C_FLAGS_RELEASE};${CMAKE_CXX_FLAGS};${CMAKE_CXX_FLAGS_RELEASE}")
+set(SM_REPLAY_SOURCE_ID "${CMAKE_C_FLAGS};${CMAKE_C_FLAGS_RELEASE};${CMAKE_CXX_FLAGS};${CMAKE_CXX_FLAGS_RELEASE};activity=${SM_VIEW_ACTIVITY}")
 foreach(input IN LISTS SM_REPLAY_ID_INPUTS)
     file(SHA256 ${input} input_hash)
     string(APPEND SM_REPLAY_SOURCE_ID ";${input_hash}")
@@ -369,6 +396,9 @@ endif()
 recomp_target_launcher_ui(SuperMetroidSNESRecomp
     CONSOLE snes
     BOXART ${CMAKE_CURRENT_SOURCE_DIR}/recomp/launcher/boxart.tga)
+if(SNESRECOMP_ENABLE_NET)
+    snesrecomp_enable_recomp_net(SuperMetroidSNESRecomp)
+endif()
 
 # Omit the codegen host AND its include directory. The shared desktop host
 # detects that capability by header availability; the shipped launcher only

@@ -4,17 +4,20 @@
 #include "sm_replay.h"
 #include "sm_video.h"
 #include "sm_renderer.h"
+#include "sm_activity.h"
 
 static bool SmFrameBegin(uint32_t *inputs) {
+  if (!SmActivityFrameBegin()) return false;
   if (!SmReplayBegin(inputs)) return false;
   /* Playback may restore a checkpoint and change presentation at this exact
    * boundary, so latch objects after those changes. */
-  if (g_sm_video.enhanced || g_sm_video.fps_enabled) SmRendererLatchObjectState(g_ram);
+  if (g_sm_video.enhanced || g_sm_video.fps_enabled || SmActivityNetworkWide()) SmRendererLatchObjectState(g_ram);
   return true;
 }
 
 /* Called by the framework from SnesInit, once the machine exists. */
 static void SmInitialize(void) {
+  SmActivityInitialize();
   /* Add Super Metroid's object to the crash/exit report. Registered through
    * the framework hook rather than by forking post_mortem.c, which is how
    * this port previously carried its own 833-line copy of that file. */

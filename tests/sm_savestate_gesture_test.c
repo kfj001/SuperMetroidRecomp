@@ -22,6 +22,7 @@ void RtlSaveLoad(int t, int slot) { (void)t; (void)slot; }
  * 2026-09); the gesture under test never reaches them. */
 void RtlEnsureSaveDir(void) { }
 bool RtlSaveSnapshot(const char *filename) { (void)filename; return false; }
+bool RtlSaveSnapshotRingBlanked(const char *filename) { (void)filename; return false; }
 bool RtlLoadSnapshot(const char *filename) { (void)filename; return false; }
 void RtlSaveSlotPath(int slot, char *buf, size_t buflen) {
     if (buf && buflen) snprintf(buf, buflen, "/nonexistent/slot%d.sav", slot);
