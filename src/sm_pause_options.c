@@ -190,14 +190,37 @@ static RecompRuntimeUi *Ui(void) {
  * tab's cells switch to palette 3 for a lit highlight. */
 static void HighlightFooterTab(void);
 
-/* Glow the L/R navigation buttons' gray backdrop, matching the original
- * game's animated tab indicator. The ROM pulses the buttons each frame
- * (HandlePauseScreenPaletteAnimation, $82:A92B); the host reproduces the
- * pulse by repainting the pill body, cycling gold #FFB500 and bright yellow
- * #F7E700 every 4 frames. The phase resets to 0 whenever the panel opens so
- * the animation starts consistently. */
-static int s_glow_phase;
-static void GlowFooterLrReset(void) { s_glow_phase = 0; }
+/* Breathe the L/R navigation buttons' gray backdrop on the cadence of the
+ * ROM's pause-screen palette animation (HandlePauseScreenPaletteAnimation,
+ * $82:A92B): a 14-step cycle that holds step 0 -- the unlit rest -- for 15
+ * frames and every other step for 3 frames (the step-hold table at $82:C10C),
+ * so one full breath takes 54 frames, the same oscillation the pause map and
+ * file-select screens run. The host reproduces the breath on the pill: the
+ * body (tile tone 15) follows the animated palette's tone 15 (gray -> warm
+ * tan -> bright orange at the peak) and the rim (tile tone 14) follows its
+ * tone 5 (gray -> white), because the animation's own tone 14 stays black in
+ * every step. The step resets to 0 whenever the panel opens so the breath
+ * starts at rest. */
+enum { kGlowStepCount = 14 };
+static const uint8_t kGlowStepHolds[kGlowStepCount] = {
+  15, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+};
+static const uint32_t kGlowBodyColors[kGlowStepCount] = {
+  0xFF636363u, 0xFF736352u, 0xFF846B4Au, 0xFF8C6B42u, 0xFF9C7339u,
+  0xFFB57329u, 0xFFD67B18u, 0xFFFF8C00u, 0xFFD67B18u, 0xFFB57329u,
+  0xFF9C7339u, 0xFF8C6B42u, 0xFF846B4Au, 0xFF736352u,
+};
+static const uint32_t kGlowRimColors[kGlowStepCount] = {
+  0xFF9C9C9Cu, 0xFFA5A5A5u, 0xFFADADADu, 0xFFB5B5B5u, 0xFFC6C6C6u,
+  0xFFCECECEu, 0xFFE7E7E7u, 0xFFFFFFFFu, 0xFFE7E7E7u, 0xFFCECECEu,
+  0xFFC6C6C6u, 0xFFB5B5B5u, 0xFFADADADu, 0xFFA5A5A5u,
+};
+static int s_glow_step;
+static int s_glow_countdown;
+static void GlowFooterLrReset(void) {
+  s_glow_step = 0;
+  s_glow_countdown = kGlowStepHolds[0];
+}
 
 void SmPauseOptions_SetActive(bool active) {
   RecompRuntimeUi *ui = Ui();
@@ -334,29 +357,19 @@ static void HighlightFooterTab(void) {
 
 /* Draw the L/R button glow on the navigation buttons' gray backdrop.
  * The original game animates a CGRAM palette each frame (plus a highlight
- * sprite) so the L/R button body pulses gold <-> bright yellow; the panel
+ * sprite) so the L/R button breathes warm on the pause screens; the panel
  * composites over that, so the host reproduces it by repainting the pill's
  * backdrop tones (footer cols 1-4 and 27-30 -- see SmRomPauseFooterGlowDraw)
- * with the cycling colour, leaving the arrow glyph itself alone.
+ * with the current step's body and rim colours, leaving the arrow glyph
+ * itself alone.
  *
  * Drawn after SmRomPauseFooterDraw. */
 static void DrawFooterGlow(uint32_t *dst, int stride, int width, int height,
                            int x, int y);
 static void DrawFooterGlow(uint32_t *dst, int stride, int width, int height,
                            int x, int y) {
-  static const uint32_t kGlowColors[] = {
-    0xFFFFB500u,  /* gold */
-    0xFFFFB500u,
-    0xFFFFB500u,
-    0xFFFFB500u,
-    0xFFF7E700u,  /* bright yellow */
-    0xFFF7E700u,
-    0xFFF7E700u,
-    0xFFF7E700u,
-  };
-  const uint32_t color =
-      kGlowColors[s_glow_phase % (int)(sizeof(kGlowColors) / sizeof(kGlowColors[0]))];
-  SmRomPauseFooterGlowDraw(dst, stride, width, height, x, y, color);
+  SmRomPauseFooterGlowDraw(dst, stride, width, height, x, y,
+                           kGlowBodyColors[s_glow_step], kGlowRimColors[s_glow_step]);
 }
 
 /* Leave the panel for a ROM screen, starting from the fade-out. */
@@ -387,10 +400,15 @@ void SmPauseOptions_GuestTick(void) {
   const uint16 pressed = joypad1_newkeys;
 
   SmPauseOptions_SyncToGuest();
-  if (SmPauseOptions_IsActive())
-    /* Advance the L/R button glow phase once per game frame. Drawn later in
-     * DrawPanel, after the guest's pause routine has run its animations. */
-    s_glow_phase++;
+  if (SmPauseOptions_IsActive()) {
+    /* Advance the pill breath once per game frame, mirroring the guest's
+     * decrement-then-advance palette timer. Drawn later in DrawPanel, after
+     * the guest's pause routine has run its animations. */
+    if (--s_glow_countdown == 0) {
+      s_glow_step = (s_glow_step + 1) % kGlowStepCount;
+      s_glow_countdown = kGlowStepHolds[s_glow_step];
+    }
+  }
   if (SmPauseOptions_IsActive() && Leaving()) {
     ConsumePad(kPanelOwned);
     return;

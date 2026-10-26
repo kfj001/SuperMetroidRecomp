@@ -318,21 +318,22 @@ void SmRomPauseFooterUpdate(void) {
   }
 }
 
-/* Repaint the L/R navigation buttons' gray backdrop with `color`.
+/* Repaint the L/R navigation buttons' gray backdrop with `body_color` /
+ * `rim_color`.
  *
  * In the cartridge the buttons pulse because the pause routine animates a
  * CGRAM palette each frame (HandlePauseScreenPaletteAnimation, $82:A92B,
- * cycling kPauseAnimatedPalette at $82:A987 into palette 11) together with a
- * highlight sprite over them ($82:A59A). That animation lives in the guest's
- * PPU, hidden under the panel, so the host reproduces it: the pill body of
- * the $B6:8000 tileset is tones 14 (#BDBDBD rim) and 15 (#636363 body), and
- * exactly those pixels are repainted; the arrow glyph (tones 10/12/13) and
- * every other footer cell are left alone. The guest's label-palette routine
- * patches only the window's top edge, so the pills always decode to the same
- * two grays, even when the host's tab highlight switches their entries to
- * palette 3. */
+ * cycling kPauseAnimatedPalette at $82:A987 into palette 11 on the ROM's
+ * 54-frame breath) together with a highlight sprite over them ($82:A59A).
+ * That animation lives in the guest's PPU, hidden under the panel, so the
+ * host reproduces it: the pill body of the $B6:8000 tileset is tone 15
+ * (#636363 unlit) and its rim is tone 14 (#9C9C9C unlit), and exactly those
+ * pixels are repainted; the arrow glyph (tones 10/12/13) and every other
+ * footer cell are left alone. The guest's label-palette routine patches only
+ * the window's top edge, so the pills always decode to the same two grays,
+ * even when the host's tab highlight switches their entries to palette 3. */
 void SmRomPauseFooterGlowDraw(uint32_t *dst, int stride, int width, int height,
-                              int x, int y, uint32_t color) {
+                              int x, int y, uint32_t body_color, uint32_t rim_color) {
   if (!dst || stride <= 0) return;
   const uint16_t *cells = (const uint16_t *)(g_ram + 0x3000);
   const unsigned base = kPauseFooterRow * kPauseTilemapCols;
@@ -356,7 +357,10 @@ void SmRomPauseFooterGlowDraw(uint32_t *dst, int stride, int width, int height,
           const int sx = hflip ? 7 - col : col;
           const unsigned tone = RomTilePixelAt(0xB6, kFrameTileBase, tile,
                                                (unsigned)sx, (unsigned)sy, 4);
-          if (tone == 14u || tone == 15u) dst[py * stride + px] = color;
+          if (tone == 15u)
+            dst[py * stride + px] = body_color;
+          else if (tone == 14u)
+            dst[py * stride + px] = rim_color;
         }
       }
     }
