@@ -32,16 +32,134 @@ enum { kLabelMode_Map = 0, kLabelMode_Equipment = 2 };
 /* Game states the panel can be up in: paused, and the unpause fade-out a
  * Start press begins ($82:9324). */
 enum { kGameState_Paused = 0x0F, kGameState_UnpausingFadeOut = 0x10 };
-static unsigned GameState(void) { return g_ram[0x0998]; }
-static uint8 Inidisp(void) { return g_ram[0x0051]; }  /* reg_INIDISP shadow */
+static unsigned GameState(void) { return game_state; }
+static uint8 Inidisp(void) { return reg_INIDISP; }
+
+/* ── the ROM's own tab-change effects, reproduced verbatim ─────────────── */
+
+/* QueueSfx1_Max6 ($80:9049/9051) with the id factored out: the ROM's own
+ * SFX-1 queue write, including its three gates (debug-mute, pre-credits
+ * game state, power-bomb explosion) and its full-ring replace-if-lower rule.
+ * The queue is pumped once per frame by the guest, so a write here sounds on
+ * this frame, exactly as a guest call to QueueSfx1_Max6(0x38) would. */
+static void QueueSfx1Max6(uint8 id) {
+  sfx_max_queued[0] = (uint8)((id << 8) | 6);
+  if (((sfx_writepos[0] - sfx_readpos[0]) & 0xF) < 6) {
+    if (!debug_disable_sounds && game_state < 0x28 &&
+        (power_bomb_explosion_status & 0x8000) == 0) {
+      uint8 wp = sfx_writepos[0];
+      uint8 wp1 = (uint8)(wp + 1);
+      if (wp1 >= 0x10) wp1 = 0;  /* the decomp's ring wrap: the pointer stays 0-15 */
+      if (wp1 == sfx_readpos[0]) {
+        if (id < sfx1_queue[wp])
+          sfx1_queue[wp] = id;
+      } else {
+        sfx1_queue[wp] = id;
+        sfx_writepos[0] = wp1;
+        sfx1_queue[wp1] = 0;
+      }
+    }
+  }
+}
+
+/* HandleFadeOut ($80:8924) and HandleFadeIn ($80:894D), the ROM's two INIDISP
+ * fade steps, run on the guest's own words. The counter underflow is what
+ * makes the step and the delay word is its reload value: delay 0 steps every
+ * frame (the fast tab-change fade-out), delay 1 every other frame (the slow
+ * fades). At level 1 a fade-out writes 0x80 (force-blank, black) and a
+ * fade-in off 0x80 writes 1 (layer bits restored), full-byte. */
+static void FadeStepOut(void) {
+  if ((int16)(screen_fade_counter - 1) < 0) {
+    screen_fade_counter = screen_fade_delay;
+    if ((reg_INIDISP & 0xF) != 0) {
+      if ((reg_INIDISP & 0xF) == 1)
+        reg_INIDISP = 0x80;
+      else
+        reg_INIDISP = (reg_INIDISP & 0xF) - 1;
+    }
+  } else {
+    --screen_fade_counter;
+  }
+}
+
+static void FadeStepIn(void) {
+  if ((int16)(screen_fade_counter - 1) < 0) {
+    screen_fade_counter = screen_fade_delay;
+    if (((reg_INIDISP + 1) & 0xF) != 0)
+      reg_INIDISP = (reg_INIDISP + 1) & 0xF;
+  } else {
+    --screen_fade_counter;
+  }
+}
+
+/* The host's enter fade is its own: there is no guest screen behind the third
+ * tab, so none of the guest's fade states (PauseMenu_2-7) is involved. The
+ * driver's only state is a phase marker that reuses the screen_fade_delay
+ * word -- which is 0 at pause rest and written back to 0 by every paused
+ * completion path -- so RAM snapshots and run-ahead rollback converge it with
+ * the rest of the fade. The delay word is overloaded (cadence value when the
+ * law runs, marker otherwise); the driver swaps it for the cadence, runs the
+ * exact law, and swaps it back.
+ *
+ * It runs only while the guest is still on a pause tab (menu_index 0/1) with
+ * a marker set. That is what keeps the host out of the guest's own fades: a
+ * tab change runs on menu states 2-7 and the unpause in state 16+, where the
+ * guest drives the same words itself (and whose Load states happen to write
+ * the same delay value 1 the marker uses). */
+enum { kFadeMarker_None = 0, kFadeMarker_Down = 1, kFadeMarker_Up = 2 };
+
+static void FadeDriverStep(void) {
+  const uint16 marker = screen_fade_delay;
+  if (marker == kFadeMarker_None) return;
+  if (menu_index != kPauseMenu_MapScreen &&
+      menu_index != kPauseMenu_EquipmentScreen)
+    return;
+  screen_fade_delay = (marker == kFadeMarker_Up) ? 1 : 0;
+  if (marker == kFadeMarker_Down)
+    FadeStepOut();
+  else
+    FadeStepIn();
+  screen_fade_delay = marker;
+  const uint8 ini = reg_INIDISP;
+  if (marker == kFadeMarker_Down) {
+    /* Down finished at force-blank: hand off to the up phase. The first
+     * up-phase frame is a no-step (counter 1 -> 0), matching the frame the
+     * native Load state spends black. */
+    if (ini == 0x80) {
+      screen_fade_delay = kFadeMarker_Up;
+      screen_fade_counter = 1;
+    }
+  } else if (!(ini & 0x80) && (ini & 0xF) == 0xF) {
+    screen_fade_delay = kFadeMarker_None;
+    screen_fade_counter = 0;
+  }
+}
+
+/* The guest's pause screen acts only on its timed-held input:
+ * ReleaseButtonsFilter(3) ($80:8146), which runs in the guest routine after
+ * this tick, reports a button as newly held only once it has been stably
+ * held through the decay window -- so the unpause Start edge lands several
+ * frames after the press, and a quick Start tap produces no edge at all.
+ * Mirror the filter's next result (all of its state is in guest RAM) so the
+ * host hands the in-flight enter fade to the guest's own unpause on exactly
+ * the frame the guest unpauses, and leaves an ignored tap's fade to run to
+ * completion. Call after the pad is consumed: the guest then sees only the
+ * Start bit, which is what the mask below reads. */
+static bool GuestWillUnpauseThisFrame(void) {
+  const uint16 newkeys = joypad1_newkeys & kButton_Start;
+  const uint16 lastkeys = joypad1_lastkeys & kButton_Start;
+  const uint16 held = (uint16)(~newkeys & lastkeys);
+  if (held != joypad_released_keys) return false;  /* a release event resets the filter */
+  if (((uint16)(timed_held_input_timer - 1) & 0x8000) == 0)
+    return false;  /* still decaying: the filter clears, no edge */
+  const uint16 prev = timed_held_input;
+  return ((held & (uint16)(prev ^ held)) & kButton_Start) != 0;
+}
 
 /* ── model ────────────────────────────────────────────────────────────── */
 
 static const char kSection[] = "Options";
 static const char *g_aspect_choices[SM_ASPECT_COUNT];
-static bool g_leave_fade_in_progress = false;
-static bool g_enter_fade_active = false;
-static bool g_leave_fade_active = false;
 /* The framework's choices are fixed vocabulary; the SM aspect names come from
  * sm_video at panel creation. */
 static const char *g_fullscreen_choices[2] = { "Windowed", "Borderless" };
@@ -274,28 +392,6 @@ static bool Leaving(void) {
          menu_index == kPauseMenu_FadeOutToMap;
 }
 
-/* INIDISP entry/leave fade driver: called from SmAfterRunFrame. */
-void SmPauseOptions_FadeTick(void) {
-  static int s_inidisp_fade_frame = 0;
-  static int s_inidisp_fade_dir = 0;  // -1 = down, 1 = up, 0 = idle
-  if (SmPauseOptions_Visible() && s_inidisp_fade_dir == 0) {
-    s_inidisp_fade_dir = -1;
-    s_inidisp_fade_frame = 0;
-  }
-  if (s_inidisp_fade_dir != 0) {
-    s_inidisp_fade_frame++;
-    int val;
-    if (s_inidisp_fade_dir < 0) {
-      val = 15 - s_inidisp_fade_frame;
-      if (val < 0) { val = 0; s_inidisp_fade_dir = 1; }
-    } else {
-      val = s_inidisp_fade_frame - 8;
-      if (val > 15) { val = 15; s_inidisp_fade_dir = 0; }
-    }
-    g_ram[0x0051] = (uint8)val;
-  }
-}
-
 void SmPauseOptions_SyncToGuest(void) {
   if (!SmPauseOptions_IsActive()) return;
   const unsigned state = GameState();
@@ -318,9 +414,6 @@ enum {
                 kButton_Left | kButton_Down | kButton_Up | kButton_Start |
                 kButton_Select | kButton_Y | kButton_B,
 };
-
-/* Forward declare SFX helper. */
-static void HostWriteSfxId(uint16 id);
 
 /* Swallow presses so the ROM's ReleaseButtonsFilter(3) computes no newly-held
  * edge for them. A newly-pressed button is also in joypad1_lastkeys (it is
@@ -372,15 +465,48 @@ static void DrawFooterGlow(uint32_t *dst, int stride, int width, int height,
                            kGlowBodyColors[s_glow_step], kGlowRimColors[s_glow_step]);
 }
 
-/* Leave the panel for a ROM screen, starting from the fade-out. */
-static void LeaveTo(uint16 fade_out_state, uint16 label_mode) {
-  menu_index = fade_out_state;
-  pausemenu_button_label_mode = label_mode;
+/* Leave the panel for a ROM screen, riding the ROM's own tab change.
+ * target is the label mode of the tab to end on (kLabelMode_*). A same-tab
+ * leave -- R while the guest is already on Equipment, L or B on Map -- is
+ * the ROM's total no-op (its L branch early-returns on Map, its R branch
+ * refuses Equipment), so it just closes the panel with no SFX and no fade;
+ * an in-flight enter fade keeps running on the guest's screen and finishes,
+ * so the brightness always recovers.
+ *
+ * The pad press that caused the leave is already consumed by the caller, so
+ * the guest's own shoulder handler sees no edge and the host's writes below
+ * are the only tab change. */
+static void LeaveTo(uint16 target_label_mode) {
+  const uint16 current = (menu_index == kPauseMenu_EquipmentScreen)
+      ? kLabelMode_Equipment : kLabelMode_Map;
+  if (current == target_label_mode) {
+    SmPauseOptions_SetActive(false);
+    return;
+  }
+  /* The two writes HandlePauseScreenLrInput makes for this tab change ($82:
+   * A50C): the fade-out state and the lit label it will land on. */
+  menu_index = (current == kLabelMode_Map)
+      ? kPauseMenu_FadeOutToEquipment : kPauseMenu_FadeOutToMap;
+  pausemenu_button_label_mode = target_label_mode;
+  pausemenu_shoulder_button_highlight =
+      (target_label_mode == kLabelMode_Equipment) ? 2 : 1;
+  pausemenu_start_lr_pressed_highlight_timer = 5;
+  QueueSfx1Max6(0x38);
   /* The footer tilemap copy needs refreshing for the target tab's labels.
    * Tab highlighting and the L/R button glow are applied each frame in
    * DrawPanel, after the guest's own pause routine has run its palette
    * animations. */
   SmRomPauseFooterUpdate();
+  /* The guest dispatches kPauseMenuFuncs[menu_index] at the top of its
+   * routine, on this same frame -- whereas the native shoulder press changes
+   * menu_index inside PauseMenu_0/1, after the dispatch, so the press frame
+   * never steps the fade. A counter of 1 makes the guest's first
+   * HandleFadeOut a no-step (1 -> 0) to keep the press frame's brightness,
+   * and from the next frame the 0/0 fast fade runs exactly on the native
+   * cadence. delay 0 doubles as the "no host fade" marker, taking the
+   * host's enter driver out of the guest's own fade. */
+  screen_fade_counter = 1;
+  screen_fade_delay = kFadeMarker_None;
 }
 
 void SmPauseOptions_GuestTick(void) {
@@ -391,7 +517,7 @@ void SmPauseOptions_GuestTick(void) {
     { kButton_Right, RECOMP_RUNTIME_UI_INPUT_RIGHT },
     { kButton_A,     RECOMP_RUNTIME_UI_INPUT_ACCEPT },
   };
-  /* While the panel is up it owns the pad. Only Start reaches the ROM's Map
+  /* While the panel is up it owns the pad. Only Start reaches the ROM's pause
    * screen beneath it, which unpauses on it as usual. Held buttons go too:
    * ReleaseButtonsFilter turns a button held for a few frames into the pause
    * screens' input, so a held D-pad would scroll the hidden map and a held R
@@ -400,6 +526,19 @@ void SmPauseOptions_GuestTick(void) {
   const uint16 pressed = joypad1_newkeys;
 
   SmPauseOptions_SyncToGuest();
+
+  /* The host's own enter fade, if in flight: step it first, before anything
+   * else the host does this frame. It is deliberately not gated on the panel
+   * being active: if a same-tab close cancelled the panel mid-fade, the fade
+   * keeps running on the guest's screen and finishes, so the brightness
+   * always recovers. The press frame that opened the panel is not a step
+   * frame (the marker was still 0 when the driver ran), matching the native
+   * tab change, whose press frame runs the old screen state: no step on the
+   * press frame, 15 fast steps to force-blank, 1 no-step frame, 15 slow
+   * steps back to full -- full again at press+45, 2 black frames; the
+   * native tab change's Load frame makes it 46 frames and 3 blacks. */
+  FadeDriverStep();
+
   if (SmPauseOptions_IsActive()) {
     /* Advance the pill breath once per game frame, mirroring the guest's
      * decrement-then-advance palette timer. Drawn later in DrawPanel, after
@@ -408,55 +547,66 @@ void SmPauseOptions_GuestTick(void) {
       s_glow_step = (s_glow_step + 1) % kGlowStepCount;
       s_glow_countdown = kGlowStepHolds[s_glow_step];
     }
-  }
-  if (SmPauseOptions_IsActive() && Leaving()) {
+    if (Leaving()) {
+      ConsumePad(kPanelOwned);
+      return;
+    }
     ConsumePad(kPanelOwned);
-    return;
-  }
-  if (!SmPauseOptions_IsActive()) {
+    /* Start handoff. The panel never consumes Start, so the guest's own
+     * HandlePauseScreenStart does the unpause: it queues the 0x38 SFX itself
+     * (queueing one more here would double it) and writes the 1/1 slow fade
+     * cadence itself. The only thing the host must do is take its enter
+     * driver off the words -- and only on the frame the guest actually takes
+     * the timed-held Start edge, which is a hold frame several frames after
+     * the press, not the press frame. The prediction is exact (it mirrors
+     * the guest's filter), so it is checked every frame and is the only
+     * guard: a Start tap the filter will never turn into an edge leaves the
+     * enter fade to run to completion. */
+    if (GuestWillUnpauseThisFrame()) {
+      screen_fade_delay = kFadeMarker_None;
+      screen_fade_counter = 0;
+    }
+    /* The guest's own pause routine runs after this tick and keeps the footer
+     * tilemap current between frames, including palette animations. The panel
+     * applies tab highlighting and the L/R button glow right before drawing,
+     * in DrawPanel. */
+    if (pressed & kButton_R) {
+      /* R leaves toward Equipment, the ROM's Map-screen shoulder direction. */
+      LeaveTo(kLabelMode_Equipment);
+      return;
+    }
+    if (pressed & kButton_L) {
+      /* L leaves toward Map, the ROM's Equipment-screen shoulder direction. */
+      LeaveTo(kLabelMode_Map);
+      return;
+    }
+    for (size_t i = 0; i < sizeof(kMenuButtons) / sizeof(kMenuButtons[0]); ++i)
+      if (pressed & kMenuButtons[i].button) {
+        recomp_runtime_ui_handle_input(g_ui, kMenuButtons[i].input, 1, 0);
+        QueueSfx1Max6(0x37);  /* row nav SFX */
+      }
+    if (g_leave || (pressed & kButton_B)) {
+      g_leave = false;
+      LeaveTo(kLabelMode_Map);
+      return;
+    }
+  } else {
     /* The tab ring is Map -> Equipment -> Options -> Map (R forward, L back).
      * The ROM ignores L on Map and R on Equipment, so these are free. No-pin
-     * model: do NOT write menu_index=MapScreen here; let the ROM's own L handler
-     * run under the panel so the panel opens over whatever screen the guest is on
-     * (its real tab), avoiding the hop+beep of forcing the Map screen. */
+     * model: do NOT write menu_index=MapScreen here; let the ROM's own L
+     * handler run under the panel so the panel opens over whatever screen the
+     * guest is on (its real tab), avoiding the hop+beep of forcing the Map
+     * screen. The enter rides the ROM's tab-change effects: the 0x38 SFX and
+     * a host-driven fast fade-out / slow fade-in on the screen it opens over,
+     * the guest staying on its own tab underneath. */
     if ((menu_index == kPauseMenu_EquipmentScreen && (pressed & kButton_R)) ||
         (menu_index == kPauseMenu_MapScreen && (pressed & kButton_L))) {
+      QueueSfx1Max6(0x38);  /* tab change SFX */
       SmPauseOptions_SetActive(true);
+      screen_fade_delay = kFadeMarker_Down;
+      screen_fade_counter = 0;
       ConsumePad(kPanelOwned);
-      HostWriteSfxId(0x38);  /* tab change SFX */
     }
-    return;
-  }
-
-  ConsumePad(kPanelOwned);
-  /* The guest's own pause routine runs after this tick and keeps the footer
-   * tilemap current between frames, including palette animations. The panel
-   * applies tab highlighting and the L/R button glow right before drawing, in
-   * DrawPanel. */
-  if (pressed & kButton_R) {
-    /* R always navigates toward Equipment/Samus, matching the ROM's behavior
-     * on the Map screen (R -> Equipment). */
-    LeaveTo(kPauseMenu_FadeOutToEquipment, kLabelMode_Equipment);
-    HostWriteSfxId(0x38);  /* tab change SFX */
-    return;
-  }
-  if (pressed & kButton_L) {
-    /* L always navigates toward Map, matching the ROM's behavior on the
-     * Equipment screen (L -> Map). */
-    LeaveTo(kPauseMenu_FadeOutToMap, kLabelMode_Map);
-    HostWriteSfxId(0x38);  /* tab change SFX */
-    return;
-  }
-  for (size_t i = 0; i < sizeof(kMenuButtons) / sizeof(kMenuButtons[0]); ++i)
-    if (pressed & kMenuButtons[i].button) {
-      recomp_runtime_ui_handle_input(g_ui, kMenuButtons[i].input, 1, 0);
-      HostWriteSfxId(0x37);  /* row nav SFX */
-    }
-  if (g_leave || (pressed & kButton_B)) {
-    g_leave = false;
-    LeaveTo(kPauseMenu_FadeOutToMap, kLabelMode_Map);
-    HostWriteSfxId(0x38);  /* tab change SFX */
-    return;
   }
 }
 
@@ -473,11 +623,6 @@ void SmPauseOptions_GuestTick(void) {
 
 static int TextLen(const char *s) { return (int)strlen(s); }
 
-static void HostWriteSfxId(uint16 id) {
-  uint16 *rq = (uint16*)(&g_ram[0x0653]);
-  *rq = id;
-}
-
 static void DrawCentered(uint32_t *dst, int stride, int h_max, int width,
                          int y, const char *s, uint32_t col, int scale) {
   int x = (width - TextLen(s) * 8 * scale) / 2;
@@ -487,12 +632,27 @@ static void DrawCentered(uint32_t *dst, int stride, int h_max, int width,
 
 bool SmPauseOptions_Visible(void) {
   const unsigned state = GameState();
-  return SmPauseOptions_IsActive() &&
-         (state == kGameState_Paused || state == kGameState_UnpausingFadeOut);
+  if (!SmPauseOptions_IsActive() ||
+      (state != kGameState_Paused && state != kGameState_UnpausingFadeOut))
+    return false;
+  /* Hidden through the host's own enter fade-out: the guest screen underneath
+   * is what dims to black there, exactly as in a native tab change, and the
+   * panel reappears (dimmed) on the fade-in. The paused-state clause keeps
+   * the guest's unpause fade (state 16, which also runs with the delay word
+   * at 1) out of this: there the panel stays up, dimmed with the screen. */
+  if (state == kGameState_Paused &&
+      (menu_index == kPauseMenu_MapScreen || menu_index == kPauseMenu_EquipmentScreen) &&
+      screen_fade_delay == kFadeMarker_Down)
+    return false;
+  return true;
 }
 
-/* While leaving, the panel fades with the screen under it: the PPU's master
- * brightness (INIDISP 0-15, forced blank = black) applied to the panel. */
+/* The panel fades with the screen under it: the PPU's master brightness
+ * (INIDISP 0-15, force-blank = black) applied to it. The level comes from
+ * INIDISP itself rather than a host fade flag, because INIDISP is where every
+ * fade lands -- the host's enter fade, the guest's tab change, the guest's
+ * unpause -- so the panel tracks whichever one is running. Self-gating at
+ * full brightness. */
 static void DimToScreenBrightness(uint32_t *dst, int stride, int width, int height) {
   const uint8 inidisp = Inidisp();
   const unsigned level = (inidisp & 0x80) ? 0 : (inidisp & 0x0F);
@@ -515,7 +675,8 @@ void SmPauseOptions_Render(uint32_t *dst, int stride, int width, int height) {
   if (!dst || stride <= 0 || height <= 0 || !SmPauseOptions_IsActive()) return;
   if (width > stride) width = stride;
   DrawPanel(dst, stride, width, height);
-  if (Leaving() || g_enter_fade_active)
+  const uint8 inidisp = Inidisp();
+  if ((inidisp & 0x80) || (inidisp & 0x0F) < 0x0F)
     DimToScreenBrightness(dst, stride, width, height);
 }
 
